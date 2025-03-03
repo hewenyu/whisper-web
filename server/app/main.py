@@ -218,26 +218,43 @@ async def websocket_transcribe(websocket: WebSocket, client_id: str):
                         file_size = os.path.getsize(temp_path)
                         logger.info(f"Saved audio data to temporary file: {temp_path} ({file_size} bytes)")
                         
+                        # 检查文件格式
+                        try:
+                            import magic
+                            file_type = magic.from_file(temp_path, mime=True)
+                            logger.info(f"Detected file type: {file_type}")
+                        except ImportError:
+                            logger.warning("python-magic not installed, skipping file type detection")
+                        
                         # 执行转录
                         logger.info("Starting transcription")
-                        result = await transcriber.transcribe_file(
-                            file_path=temp_path,
-                            language=None,
-                            task="transcribe"
-                        )
-                        
-                        # 检查结果
-                        if result:
-                            logger.info(f"Transcription successful, got {len(result)} segments")
-                            # 发送中间结果
+                        try:
+                            result = await transcriber.transcribe_file(
+                                file_path=temp_path,
+                                language=None,
+                                task="transcribe"
+                            )
+                            
+                            # 检查结果
+                            if result:
+                                logger.info(f"Transcription successful, got {len(result)} segments")
+                                # 发送中间结果
+                                await websocket.send_json({
+                                    "type": "interim_result",
+                                    "segments": result
+                                })
+                            else:
+                                logger.warning("Transcription returned empty result")
+                        except Exception as e:
+                            logger.error(f"Error during transcription process: {str(e)}")
+                            logger.exception("Detailed transcription error:")
                             await websocket.send_json({
-                                "type": "interim_result",
-                                "segments": result
+                                "type": "error",
+                                "message": f"Transcription process error: {str(e)}"
                             })
-                        else:
-                            logger.warning("Transcription returned empty result")
                     except Exception as e:
                         logger.error(f"Error during transcription: {str(e)}")
+                        logger.exception("Detailed error:")
                         # 发送错误消息但不中断连接
                         await websocket.send_json({
                             "type": "error",

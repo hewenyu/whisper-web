@@ -7,9 +7,11 @@ from typing import List, Dict, Optional, Any, Tuple
 import uuid
 import json
 from datetime import timedelta
+import time
 
 from faster_whisper import WhisperModel
 import ffmpeg
+import whisperx
 
 from .models import TranscriptionSegment, SubtitleFormat
 
@@ -18,35 +20,66 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class WhisperTranscriber:
-    def __init__(self, model_size: str = None, device: str = None, compute_type: str = None):
+    def __init__(
+        self,
+        model_size: Optional[str] = None,
+        device: Optional[str] = None,
+        compute_type: Optional[str] = None
+    ):
         """
         初始化Whisper转录器
         
         Args:
             model_size: 模型大小 ("tiny", "base", "small", "medium", "large")
-            device: 使用的设备 ("cpu" 或 "cuda")
-            compute_type: 计算类型 ("float16", "int8")
+            device: 设备 ("cpu", "cuda", "auto")
+            compute_type: 计算类型 ("float16", "float32", "int8")
         """
-        # 从环境变量读取配置，如果没有提供参数
-        self.model_size = model_size or os.getenv("MODEL_SIZE", "base")
-        self.device = device or os.getenv("DEVICE", "cpu")
-        self.compute_type = compute_type or os.getenv("COMPUTE_TYPE", "int8")
+        # 从环境变量读取配置
+        model_size = model_size or os.environ.get("MODEL_SIZE", "base")
+        device = device or os.environ.get("DEVICE", "auto")
+        compute_type = compute_type or os.environ.get("COMPUTE_TYPE", "float16")
         
-        # 检查CUDA是否可用，如果不可用则强制使用CPU
-        if self.device == "cuda":
+        logger.info(f"Initializing WhisperTranscriber with model_size={model_size}, device={device}, compute_type={compute_type}")
+        
+        # 检查CUDA可用性
+        import torch
+        cuda_available = torch.cuda.is_available()
+        logger.info(f"CUDA available: {cuda_available}")
+        if device == "cuda" and not cuda_available:
+            logger.warning("CUDA requested but not available, falling back to CPU")
+            device = "cpu"
+        
+        if device == "auto":
+            device = "cuda" if cuda_available else "cpu"
+            logger.info(f"Using device: {device}")
+        
+        # 记录系统信息
+        if device == "cuda":
             try:
-                import torch
-                if not torch.cuda.is_available():
-                    logger.warning("CUDA is not available, falling back to CPU")
-                    self.device = "cpu"
-                    self.compute_type = "int8"
-            except ImportError:
-                logger.warning("PyTorch not found or CUDA is not available, falling back to CPU")
-                self.device = "cpu"
-                self.compute_type = "int8"
+                gpu_name = torch.cuda.get_device_name(0)
+                logger.info(f"GPU: {gpu_name}")
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                logger.info(f"GPU Memory: {gpu_memory:.2f} GB")
+            except Exception as e:
+                logger.warning(f"Failed to get GPU info: {str(e)}")
         
-        logger.info(f"Loading Whisper model: {self.model_size} on {self.device} with {self.compute_type}")
-        self.model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
+        try:
+            # 加载模型
+            logger.info(f"Loading Whisper model: {model_size}")
+            start_time = time.time()
+            self.model = whisperx.load_model(
+                model_size,
+                device,
+                compute_type=compute_type,
+                language="auto",
+                asr_options={"suppress_blank": True}
+            )
+            load_time = time.time() - start_time
+            logger.info(f"Model loaded in {load_time:.2f} seconds")
+        except Exception as e:
+            logger.error(f"Failed to load Whisper model: {str(e)}")
+            logger.exception("Detailed model loading error:")
+            raise
         
         # 确保临时目录存在
         os.makedirs("temp", exist_ok=True)
