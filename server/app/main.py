@@ -95,7 +95,7 @@ async def transcribe_file(
         return {
             "success": True,
             "message": "Transcription completed successfully",
-            "segments": result,
+            "segments": [segment.model_dump() for segment in result],
             "subtitle_file": subtitle_path
         }
     except Exception as e:
@@ -195,7 +195,7 @@ async def websocket_transcribe(websocket: WebSocket, client_id: str):
                                 # 发送最终结果
                                 await websocket.send_json({
                                     "type": "final_result",
-                                    "segments": result
+                                    "segments": [segment.model_dump() for segment in result]
                                 })
                             else:
                                 logger.warning("Final transcription returned empty result")
@@ -318,7 +318,7 @@ async def websocket_transcribe(websocket: WebSocket, client_id: str):
                                 # 发送中间结果
                                 await websocket.send_json({
                                     "type": "interim_result",
-                                    "segments": result
+                                    "segments": [segment.model_dump() for segment in result]
                                 })
                             else:
                                 logger.warning("Transcription returned empty result")
