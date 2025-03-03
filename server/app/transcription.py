@@ -71,7 +71,7 @@ class WhisperTranscriber:
                 model_size,
                 device,
                 compute_type=compute_type,
-                language="auto",
+                language=None,
                 asr_options={"suppress_blank": True}
             )
             load_time = time.time() - start_time
@@ -109,12 +109,25 @@ class WhisperTranscriber:
             _, ext = os.path.splitext(file_path)
             ext = ext.lower()
             
-            # 如果已经是音频文件，直接返回
-            if ext in ['.wav', '.mp3', '.ogg', '.flac', '.aac', '.webm']:
-                logger.info(f"File is already an audio file ({ext}), skipping extraction")
-                return file_path
-                
-            # 提取音频
+            # 如果已经是WAV音频文件，检查格式是否符合要求
+            if ext == '.wav':
+                try:
+                    import wave
+                    with wave.open(file_path, 'rb') as wf:
+                        channels = wf.getnchannels()
+                        width = wf.getsampwidth()
+                        rate = wf.getframerate()
+                        
+                        logger.info(f"WAV file info: channels={channels}, width={width}, rate={rate}")
+                        
+                        # 如果已经是16位单声道16kHz WAV，直接返回
+                        if channels == 1 and width == 2 and rate == 16000:
+                            logger.info(f"WAV file already in correct format, skipping extraction")
+                            return file_path
+                except Exception as e:
+                    logger.warning(f"Error checking WAV file: {str(e)}, will convert anyway")
+            
+            # 提取音频到16位单声道16kHz WAV
             output_path = os.path.join("temp", f"{uuid.uuid4()}.wav")
             logger.info(f"Extracting audio to: {output_path}")
             
@@ -127,14 +140,85 @@ class WhisperTranscriber:
                     .run(capture_stdout=True, capture_stderr=True)
                 )
                 logger.info(f"Audio extraction successful: {output_path}")
-                return output_path
+                
+                # 验证输出文件
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    logger.info(f"Output file size: {os.path.getsize(output_path)} bytes")
+                    return output_path
+                else:
+                    logger.error(f"Output file is empty or does not exist: {output_path}")
+                    raise ValueError(f"Failed to extract audio: output file is empty or does not exist")
             except ffmpeg.Error as e:
-                logger.error(f"FFmpeg error: {e.stderr.decode()}")
+                logger.error(f"FFmpeg error: {e.stderr.decode() if hasattr(e, 'stderr') else str(e)}")
                 raise
         except Exception as e:
             logger.error(f"Error extracting audio: {str(e)}")
+            logger.exception("Detailed extraction error:")
             raise
     
+    def load_audio(self, file_path: str, sr: int = 16000):
+        """
+        加载音频文件并返回numpy数组
+        
+        Args:
+            file_path: 音频文件路径
+            sr: 采样率
+            
+        Returns:
+            numpy数组形式的音频数据
+        """
+        try:
+            logger.info(f"Loading audio file: {file_path}")
+            import numpy as np
+            import wave
+            
+            with wave.open(file_path, 'rb') as wf:
+                # 获取音频参数
+                channels = wf.getnchannels()
+                width = wf.getsampwidth()
+                rate = wf.getframerate()
+                frames = wf.getnframes()
+                
+                logger.info(f"Audio info: channels={channels}, width={width}, rate={rate}, frames={frames}")
+                
+                # 读取所有音频数据
+                data = wf.readframes(frames)
+                
+                # 转换为numpy数组
+                if width == 2:  # 16-bit audio
+                    dtype = np.int16
+                elif width == 4:  # 32-bit audio
+                    dtype = np.int32
+                else:
+                    dtype = np.int8
+                
+                audio_data = np.frombuffer(data, dtype=dtype)
+                
+                # 如果是立体声，转换为单声道
+                if channels == 2:
+                    audio_data = audio_data.reshape(-1, 2).mean(axis=1)
+                
+                # 转换为float32并归一化
+                audio_data = audio_data.astype(np.float32) / np.iinfo(dtype).max
+                
+                # 重采样到目标采样率
+                if rate != sr:
+                    logger.info(f"Resampling from {rate}Hz to {sr}Hz")
+                    # 简单的线性插值重采样
+                    audio_length = len(audio_data)
+                    new_length = int(audio_length * sr / rate)
+                    indices = np.linspace(0, audio_length - 1, new_length)
+                    indices = indices.astype(np.int32)
+                    audio_data = audio_data[indices]
+                
+                logger.info(f"Loaded audio data: shape={audio_data.shape}, dtype={audio_data.dtype}")
+                return audio_data
+                
+        except Exception as e:
+            logger.error(f"Error loading audio: {str(e)}")
+            logger.exception("Detailed audio loading error:")
+            raise
+
     async def transcribe_file(
         self, 
         file_path: str, 
@@ -172,47 +256,72 @@ class WhisperTranscriber:
             # 执行转录
             logger.info(f"Starting transcription with language={language}, task={task}")
             try:
-                segments, info = self.model.transcribe(
-                    audio_path,
-                    language=language,
+                # 使用自定义方法加载音频
+                audio = self.load_audio(audio_path)
+                
+                # 如果没有指定语言，先进行语言检测
+                detected_language = None
+                if language is None:
+                    logger.info("No language specified, detecting language")
+                    try:
+                        # 使用少量音频进行语言检测
+                        result = self.model.transcribe(audio[:24000], task="transcribe")
+                        detected_language = result["language"]
+                        logger.info(f"Detected language: {detected_language}")
+                    except Exception as e:
+                        logger.warning(f"Language detection failed: {str(e)}")
+                        # 默认使用英语
+                        detected_language = "en"
+                
+                # 使用检测到的语言或指定的语言进行转录
+                transcribe_language = language or detected_language or "en"
+                logger.info(f"Using language for transcription: {transcribe_language}")
+                
+                result = self.model.transcribe(
+                    audio=audio,
+                    language=transcribe_language,
                     task=task,
-                    vad_filter=True,
-                    word_timestamps=True
                 )
                 
-                logger.info(f"Transcription info: {info}")
+                # 获取转录结果
+                segments = result["segments"]
+                logger.info(f"Transcription completed with {len(segments)} segments")
                 
                 # 转换为我们的数据模型
-                result = []
-                segment_count = 0
-                
+                result_segments = []
                 for i, segment in enumerate(segments):
-                    segment_count += 1
-                    result.append(TranscriptionSegment(
+                    words = []
+                    if "words" in segment:
+                        for word in segment["words"]:
+                            words.append({
+                                "start": word["start"],
+                                "end": word["end"],
+                                "word": word["word"],
+                                "probability": word.get("probability", 1.0)
+                            })
+                    
+                    result_segments.append(TranscriptionSegment(
                         id=i,
-                        start=segment.start,
-                        end=segment.end,
-                        text=segment.text,
-                        words=[{
-                            "start": word.start,
-                            "end": word.end,
-                            "word": word.word,
-                            "probability": word.probability
-                        } for word in segment.words]
+                        start=segment["start"],
+                        end=segment["end"],
+                        text=segment["text"],
+                        words=words
                     ))
                 
-                logger.info(f"Transcription completed: {segment_count} segments")
+                logger.info(f"Processed {len(result_segments)} segments")
                 
                 # 如果音频是临时提取的，则删除
                 if audio_path != file_path and os.path.exists(audio_path):
                     os.remove(audio_path)
                     
-                return result
+                return result_segments
             except Exception as e:
                 logger.error(f"Transcription error: {str(e)}")
+                logger.exception("Detailed transcription error:")
                 raise
         except Exception as e:
             logger.error(f"Error in transcribe_file: {str(e)}")
+            logger.exception("Detailed error:")
             raise
     
     def generate_subtitles(self, segments: List[TranscriptionSegment], format: SubtitleFormat) -> str:

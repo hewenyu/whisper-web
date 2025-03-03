@@ -132,12 +132,54 @@ async def websocket_transcribe(websocket: WebSocket, client_id: str):
                     if len(audio_data) > 0:
                         logger.info(f"Received END_OF_AUDIO signal, processing final audio data ({len(audio_data)} bytes)")
                         try:
+                            # 保存音频数据到临时文件
                             with open(temp_path, "wb") as f:
+                                # 添加WAV头
+                                # 简单的WAV头，假设音频是16位单声道16kHz
+                                sample_rate = 16000
+                                channels = 1
+                                bits_per_sample = 16
+                                
+                                # 检查是否已经有WAV头
+                                if not audio_data.startswith(b'RIFF'):
+                                    logger.info("Adding WAV header to audio data")
+                                    # 计算数据大小
+                                    data_size = len(audio_data)
+                                    # RIFF头
+                                    f.write(b'RIFF')
+                                    f.write((data_size + 36).to_bytes(4, 'little'))  # 文件大小 - 8
+                                    f.write(b'WAVE')
+                                    # fmt子块
+                                    f.write(b'fmt ')
+                                    f.write((16).to_bytes(4, 'little'))  # fmt块大小
+                                    f.write((1).to_bytes(2, 'little'))  # 音频格式 (1 = PCM)
+                                    f.write((channels).to_bytes(2, 'little'))  # 通道数
+                                    f.write((sample_rate).to_bytes(4, 'little'))  # 采样率
+                                    f.write((sample_rate * channels * bits_per_sample // 8).to_bytes(4, 'little'))  # 字节率
+                                    f.write((channels * bits_per_sample // 8).to_bytes(2, 'little'))  # 块对齐
+                                    f.write((bits_per_sample).to_bytes(2, 'little'))  # 位深度
+                                    # data子块
+                                    f.write(b'data')
+                                    f.write((data_size).to_bytes(4, 'little'))  # 数据大小
+                                
+                                # 写入音频数据
                                 f.write(audio_data)
                             
                             # 检查文件大小
                             file_size = os.path.getsize(temp_path)
                             logger.info(f"Saved final audio data to temporary file: {temp_path} ({file_size} bytes)")
+                            
+                            # 检查文件格式
+                            try:
+                                import wave
+                                with wave.open(temp_path, 'rb') as wf:
+                                    channels = wf.getnchannels()
+                                    width = wf.getsampwidth()
+                                    rate = wf.getframerate()
+                                    frames = wf.getnframes()
+                                    logger.info(f"WAV file info: channels={channels}, width={width}, rate={rate}, frames={frames}")
+                            except Exception as e:
+                                logger.warning(f"Error checking WAV file: {str(e)}")
                             
                             # 执行转录
                             logger.info("Starting final transcription")
@@ -163,6 +205,7 @@ async def websocket_transcribe(websocket: WebSocket, client_id: str):
                                 })
                         except Exception as e:
                             logger.error(f"Error during final transcription: {str(e)}")
+                            logger.exception("Detailed final transcription error:")
                             await websocket.send_json({
                                 "type": "error",
                                 "message": f"Final transcription error: {str(e)}"
@@ -199,9 +242,10 @@ async def websocket_transcribe(websocket: WebSocket, client_id: str):
                         "message": f"Received text: {text_data}"
                     })
             elif 'bytes' in message:
-                # 处理二进制消息（音频数据）
+                # 处理二进制数据（音频）
                 binary_data = message['bytes']
-                logger.info(f"Received binary data: {len(binary_data)} bytes")
+                data_size = len(binary_data)
+                logger.info(f"Received binary data: {data_size} bytes")
                 
                 # 累积音频数据
                 audio_data += binary_data
@@ -212,6 +256,35 @@ async def websocket_transcribe(websocket: WebSocket, client_id: str):
                     try:
                         # 保存音频数据到临时文件
                         with open(temp_path, "wb") as f:
+                            # 添加WAV头
+                            # 简单的WAV头，假设音频是16位单声道16kHz
+                            sample_rate = 16000
+                            channels = 1
+                            bits_per_sample = 16
+                            
+                            # 检查是否已经有WAV头
+                            if not audio_data.startswith(b'RIFF'):
+                                logger.info("Adding WAV header to audio data")
+                                # 计算数据大小
+                                data_size = len(audio_data)
+                                # RIFF头
+                                f.write(b'RIFF')
+                                f.write((data_size + 36).to_bytes(4, 'little'))  # 文件大小 - 8
+                                f.write(b'WAVE')
+                                # fmt子块
+                                f.write(b'fmt ')
+                                f.write((16).to_bytes(4, 'little'))  # fmt块大小
+                                f.write((1).to_bytes(2, 'little'))  # 音频格式 (1 = PCM)
+                                f.write((channels).to_bytes(2, 'little'))  # 通道数
+                                f.write((sample_rate).to_bytes(4, 'little'))  # 采样率
+                                f.write((sample_rate * channels * bits_per_sample // 8).to_bytes(4, 'little'))  # 字节率
+                                f.write((channels * bits_per_sample // 8).to_bytes(2, 'little'))  # 块对齐
+                                f.write((bits_per_sample).to_bytes(2, 'little'))  # 位深度
+                                # data子块
+                                f.write(b'data')
+                                f.write((data_size).to_bytes(4, 'little'))  # 数据大小
+                            
+                            # 写入音频数据
                             f.write(audio_data)
                         
                         # 检查文件大小
@@ -220,11 +293,15 @@ async def websocket_transcribe(websocket: WebSocket, client_id: str):
                         
                         # 检查文件格式
                         try:
-                            import magic
-                            file_type = magic.from_file(temp_path, mime=True)
-                            logger.info(f"Detected file type: {file_type}")
-                        except ImportError:
-                            logger.warning("python-magic not installed, skipping file type detection")
+                            import wave
+                            with wave.open(temp_path, 'rb') as wf:
+                                channels = wf.getnchannels()
+                                width = wf.getsampwidth()
+                                rate = wf.getframerate()
+                                frames = wf.getnframes()
+                                logger.info(f"WAV file info: channels={channels}, width={width}, rate={rate}, frames={frames}")
+                        except Exception as e:
+                            logger.warning(f"Error checking WAV file: {str(e)}")
                         
                         # 执行转录
                         logger.info("Starting transcription")
