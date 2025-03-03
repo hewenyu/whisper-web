@@ -62,23 +62,42 @@ class WhisperTranscriber:
         Returns:
             音频文件路径
         """
-        # 检查文件是否为音频文件
-        file_ext = os.path.splitext(file_path)[1].lower()
-        if file_ext in ['.mp3', '.wav', '.flac', '.ogg']:
-            return file_path
-        
-        # 提取音频
-        audio_path = os.path.join("temp", f"{uuid.uuid4()}.wav")
-        
         try:
-            # 使用ffmpeg提取音频
-            (
-                ffmpeg
-                .input(file_path)
-                .output(audio_path, acodec='pcm_s16le', ar='16000', ac=1)
-                .run(quiet=True, overwrite_output=True)
-            )
-            return audio_path
+            # 检查文件是否存在
+            if not os.path.exists(file_path):
+                logger.error(f"File not found: {file_path}")
+                raise FileNotFoundError(f"File not found: {file_path}")
+                
+            # 检查文件大小
+            file_size = os.path.getsize(file_path)
+            logger.info(f"Processing file: {file_path} ({file_size} bytes)")
+            
+            # 检查文件扩展名
+            _, ext = os.path.splitext(file_path)
+            ext = ext.lower()
+            
+            # 如果已经是音频文件，直接返回
+            if ext in ['.wav', '.mp3', '.ogg', '.flac', '.aac', '.webm']:
+                logger.info(f"File is already an audio file ({ext}), skipping extraction")
+                return file_path
+                
+            # 提取音频
+            output_path = os.path.join("temp", f"{uuid.uuid4()}.wav")
+            logger.info(f"Extracting audio to: {output_path}")
+            
+            try:
+                # 使用ffmpeg提取音频
+                (
+                    ffmpeg
+                    .input(file_path)
+                    .output(output_path, acodec='pcm_s16le', ar='16000', ac=1)
+                    .run(capture_stdout=True, capture_stderr=True)
+                )
+                logger.info(f"Audio extraction successful: {output_path}")
+                return output_path
+            except ffmpeg.Error as e:
+                logger.error(f"FFmpeg error: {e.stderr.decode()}")
+                raise
         except Exception as e:
             logger.error(f"Error extracting audio: {str(e)}")
             raise
@@ -101,42 +120,66 @@ class WhisperTranscriber:
             转录结果段落列表
         """
         try:
+            # 检查文件是否存在
+            if not os.path.exists(file_path):
+                logger.error(f"File not found: {file_path}")
+                raise FileNotFoundError(f"File not found: {file_path}")
+                
+            # 检查文件大小
+            file_size = os.path.getsize(file_path)
+            if file_size == 0:
+                logger.error(f"Empty file: {file_path}")
+                raise ValueError(f"Empty file: {file_path}")
+                
+            logger.info(f"Transcribing file: {file_path} ({file_size} bytes)")
+            
             # 提取音频
             audio_path = await self.extract_audio(file_path)
             
             # 执行转录
-            logger.info(f"Transcribing file: {audio_path}")
-            segments, info = self.model.transcribe(
-                audio_path,
-                language=language,
-                task=task,
-                vad_filter=True,
-                word_timestamps=True
-            )
-            
-            # 转换为我们的数据模型
-            result = []
-            for i, segment in enumerate(segments):
-                result.append(TranscriptionSegment(
-                    id=i,
-                    start=segment.start,
-                    end=segment.end,
-                    text=segment.text,
-                    words=[{
-                        "start": word.start,
-                        "end": word.end,
-                        "word": word.word,
-                        "probability": word.probability
-                    } for word in segment.words]
-                ))
-            
-            # 如果音频是临时提取的，则删除
-            if audio_path != file_path and os.path.exists(audio_path):
-                os.remove(audio_path)
+            logger.info(f"Starting transcription with language={language}, task={task}")
+            try:
+                segments, info = self.model.transcribe(
+                    audio_path,
+                    language=language,
+                    task=task,
+                    vad_filter=True,
+                    word_timestamps=True
+                )
                 
-            return result
+                logger.info(f"Transcription info: {info}")
+                
+                # 转换为我们的数据模型
+                result = []
+                segment_count = 0
+                
+                for i, segment in enumerate(segments):
+                    segment_count += 1
+                    result.append(TranscriptionSegment(
+                        id=i,
+                        start=segment.start,
+                        end=segment.end,
+                        text=segment.text,
+                        words=[{
+                            "start": word.start,
+                            "end": word.end,
+                            "word": word.word,
+                            "probability": word.probability
+                        } for word in segment.words]
+                    ))
+                
+                logger.info(f"Transcription completed: {segment_count} segments")
+                
+                # 如果音频是临时提取的，则删除
+                if audio_path != file_path and os.path.exists(audio_path):
+                    os.remove(audio_path)
+                    
+                return result
+            except Exception as e:
+                logger.error(f"Transcription error: {str(e)}")
+                raise
         except Exception as e:
-            logger.error(f"Transcription error: {str(e)}")
+            logger.error(f"Error in transcribe_file: {str(e)}")
             raise
     
     def generate_subtitles(self, segments: List[TranscriptionSegment], format: SubtitleFormat) -> str:

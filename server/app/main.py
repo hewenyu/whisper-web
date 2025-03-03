@@ -130,31 +130,50 @@ async def websocket_transcribe(websocket: WebSocket, client_id: str):
                 if text_data == "END_OF_AUDIO":
                     # 音频传输结束，执行转录
                     if len(audio_data) > 0:
-                        with open(temp_path, "wb") as f:
-                            f.write(audio_data)
-                        
-                        # 执行转录
-                        result = await transcriber.transcribe_file(
-                            file_path=temp_path,
-                            language=None,
-                            task="transcribe"
-                        )
-                        
-                        # 发送结果
-                        await websocket.send_json({
-                            "type": "final_result",
-                            "segments": result
-                        })
-                        
-                        # 清理
-                        audio_data = b""
-                        if os.path.exists(temp_path):
-                            os.remove(temp_path)
+                        logger.info(f"Received END_OF_AUDIO signal, processing final audio data ({len(audio_data)} bytes)")
+                        try:
+                            with open(temp_path, "wb") as f:
+                                f.write(audio_data)
+                            
+                            # 检查文件大小
+                            file_size = os.path.getsize(temp_path)
+                            logger.info(f"Saved final audio data to temporary file: {temp_path} ({file_size} bytes)")
+                            
+                            # 执行转录
+                            logger.info("Starting final transcription")
+                            result = await transcriber.transcribe_file(
+                                file_path=temp_path,
+                                language=None,
+                                task="transcribe"
+                            )
+                            
+                            # 检查结果
+                            if result:
+                                logger.info(f"Final transcription successful, got {len(result)} segments")
+                                # 发送最终结果
+                                await websocket.send_json({
+                                    "type": "final_result",
+                                    "segments": result
+                                })
+                            else:
+                                logger.warning("Final transcription returned empty result")
+                                await websocket.send_json({
+                                    "type": "info",
+                                    "message": "No transcription result"
+                                })
+                        except Exception as e:
+                            logger.error(f"Error during final transcription: {str(e)}")
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": f"Final transcription error: {str(e)}"
+                            })
+                        finally:
+                            # 清理
+                            audio_data = b""
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
                     else:
-                        await websocket.send_json({
-                            "type": "info",
-                            "message": "No audio data received"
-                        })
+                        logger.warning("Received END_OF_AUDIO but no audio data was accumulated")
                 elif text_data.startswith("{") and text_data.endswith("}"):
                     # 处理JSON消息
                     try:
@@ -188,22 +207,42 @@ async def websocket_transcribe(websocket: WebSocket, client_id: str):
                 audio_data += binary_data
                 
                 # 如果累积了足够的数据，可以进行实时转录
-                if len(audio_data) > 1024 * 50:  # 例如，每50KB进行一次转录
-                    with open(temp_path, "wb") as f:
-                        f.write(audio_data)
-                    
-                    # 执行转录
-                    result = await transcriber.transcribe_file(
-                        file_path=temp_path,
-                        language=None,
-                        task="transcribe"
-                    )
-                    
-                    # 发送中间结果
-                    await websocket.send_json({
-                        "type": "interim_result",
-                        "segments": result
-                    })
+                if len(audio_data) > 1024 * 10:  # 降低阈值到10KB，更频繁地进行转录
+                    logger.info(f"Accumulated enough data ({len(audio_data)} bytes), performing transcription")
+                    try:
+                        # 保存音频数据到临时文件
+                        with open(temp_path, "wb") as f:
+                            f.write(audio_data)
+                        
+                        # 检查文件大小
+                        file_size = os.path.getsize(temp_path)
+                        logger.info(f"Saved audio data to temporary file: {temp_path} ({file_size} bytes)")
+                        
+                        # 执行转录
+                        logger.info("Starting transcription")
+                        result = await transcriber.transcribe_file(
+                            file_path=temp_path,
+                            language=None,
+                            task="transcribe"
+                        )
+                        
+                        # 检查结果
+                        if result:
+                            logger.info(f"Transcription successful, got {len(result)} segments")
+                            # 发送中间结果
+                            await websocket.send_json({
+                                "type": "interim_result",
+                                "segments": result
+                            })
+                        else:
+                            logger.warning("Transcription returned empty result")
+                    except Exception as e:
+                        logger.error(f"Error during transcription: {str(e)}")
+                        # 发送错误消息但不中断连接
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"Transcription error: {str(e)}"
+                        })
             else:
                 logger.warning(f"Received unknown message type: {message}")
                 await websocket.send_json({
