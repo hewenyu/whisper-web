@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Generate Icons</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            margin: 10px;
+            border: 1px solid #ccc;
+        }
+        .download-links {
+            display: flex;
+            flex-direction: column;
+            margin-top: 20px;
+        }
+        .download-links a {
+            margin: 5px;
+            padding: 10px;
+            background-color: #4CAF50;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Whisper Web Icon Generator</h1>
+    
+    <canvas id="icon16" width="16" height="16"></canvas>
+    <canvas id="icon48" width="48" height="48"></canvas>
+    <canvas id="icon128" width="128" height="128"></canvas>
+    
+    <div class="download-links">
+        <a id="download16" href="#" download="icon16.png">Download 16x16 Icon</a>
+        <a id="download48" href="#" download="icon48.png">Download 48x48 Icon</a>
+        <a id="download128" href="#" download="icon128.png">Download 128x128 Icon</a>
+    </div>
+    
+    <script>
+        function drawIcon(canvasId, size) {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            
+            // Background
+            ctx.fillStyle = '#3498db';
+            ctx.fillRect(0, 0, size, size);
+            
+            // Sound wave symbol
+            ctx.fillStyle = 'white';
+            const centerX = size / 2;
+            const centerY = size / 2;
+            const radius = size * 0.35;
+            
+            // Draw a simple sound wave icon
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            ctx.fillStyle = '#3498db';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius * 0.7, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            // Set download link
+            const downloadLink = document.getElementById(`download${size}`);
+            downloadLink.href = canvas.toDataURL('image/png');
+        }
+        
+        // Draw icons
+        drawIcon('icon16', 16);
+        drawIcon('icon48', 48);
+        drawIcon('icon128', 128);
+    </script>
+</body>
+</html> 
