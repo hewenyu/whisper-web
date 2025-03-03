@@ -77,20 +77,26 @@ function scanForVideos() {
 
 // 为视频元素设置字幕和控制
 function setupVideoElement(video) {
-  const videoId = 'whisper-web-' + Math.random().toString(36).substr(2, 9);
+  // 生成唯一ID
+  const videoId = 'video-' + Math.random().toString(36).substr(2, 9);
+  video.dataset.whisperId = videoId;
+  
+  log(`设置视频元素 [${videoId}]`);
   
   // 创建字幕容器
   const subtitleContainer = document.createElement('div');
   subtitleContainer.className = `whisper-web-subtitle-container ${settings.subtitlePosition}`;
-  subtitleContainer.id = `subtitle-${videoId}`;
+  subtitleContainer.style.display = 'none';
   
   // 创建字幕元素
   const subtitle = document.createElement('div');
   subtitle.className = 'whisper-web-subtitle';
   subtitle.style.fontSize = `${settings.fontSize}px`;
-  subtitle.textContent = '';
   
   subtitleContainer.appendChild(subtitle);
+  subtitleContainers[videoId] = subtitleContainer;
+  
+  log(`创建字幕容器 [${videoId}]`);
   
   // 创建控制元素
   const controls = document.createElement('div');
@@ -120,7 +126,6 @@ function setupVideoElement(video) {
   videoContainer.appendChild(controls);
   
   // 存储引用
-  subtitleContainers[videoId] = subtitleContainer;
   controlsElements[videoId] = controls;
   processingStatus[videoId] = false;
   
@@ -153,7 +158,19 @@ function startProcessing(video, videoId) {
     
     // 创建WebSocket连接
     const serverUrl = settings.serverUrl.replace(/^https?:\/\//, '');
-    const ws = new WebSocket(`ws://${serverUrl}/ws/transcribe/${videoId}`);
+    log('使用服务器URL: ' + serverUrl);
+    
+    // 确保使用正确的端口
+    let wsUrl;
+    if (serverUrl.includes(':')) {
+      wsUrl = `ws://${serverUrl}/ws/transcribe/${videoId}`;
+    } else {
+      // 默认使用8000端口
+      wsUrl = `ws://${serverUrl}:8000/ws/transcribe/${videoId}`;
+    }
+    
+    log('连接WebSocket: ' + wsUrl);
+    const ws = new WebSocket(wsUrl);
     websockets[videoId] = ws;
     
     ws.onopen = function() {
@@ -202,13 +219,21 @@ function startProcessing(video, videoId) {
       
       // 发送录制的数据
       mediaRecorder.ondataavailable = function(e) {
-        if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-          ws.send(e.data);
+        if (e.data.size > 0) {
+          if (ws.readyState === WebSocket.OPEN) {
+            log(`发送音频数据: ${e.data.size} 字节`);
+            ws.send(e.data);
+          } else {
+            log(`WebSocket未连接，无法发送音频数据: ${e.data.size} 字节`);
+          }
+        } else {
+          log('录制的音频数据为空');
         }
       };
       
       // 开始录制
       mediaRecorder.start(1000);
+      log('开始录制音频，每1000ms发送一次');
       
       // 更新控件
       const controls = controlsElements[videoId];
@@ -216,19 +241,29 @@ function startProcessing(video, videoId) {
     };
     
     ws.onmessage = function(event) {
-      const data = JSON.parse(event.data);
-      
-      if (data.type === 'interim_result' || data.type === 'final_result') {
-        if (data.segments && data.segments.length > 0) {
-          // 显示最后一段文本
-          const lastSegment = data.segments[data.segments.length - 1];
-          updateSubtitle(videoId, lastSegment.text);
-          log('收到字幕: ' + lastSegment.text);
+      try {
+        log('收到WebSocket消息: ' + event.data);
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'interim_result' || data.type === 'final_result') {
+          log('收到字幕结果类型: ' + data.type);
+          if (data.segments && data.segments.length > 0) {
+            // 显示最后一段文本
+            const lastSegment = data.segments[data.segments.length - 1];
+            log('收到字幕文本: ' + lastSegment.text);
+            updateSubtitle(videoId, lastSegment.text);
+          } else {
+            log('收到的字幕段落为空');
+          }
+        } else if (data.type === 'error') {
+          log('错误: ' + data.message);
+          updateSubtitle(videoId, '字幕服务错误，请重试');
+          stopProcessing(video, videoId);
+        } else {
+          log('收到未知类型的消息: ' + data.type);
         }
-      } else if (data.type === 'error') {
-        log('错误: ' + data.message);
-        updateSubtitle(videoId, '字幕服务错误，请重试');
-        stopProcessing(video, videoId);
+      } catch (error) {
+        log('处理WebSocket消息时出错: ' + error.message);
       }
     };
     
@@ -289,7 +324,9 @@ function stopProcessing(video, videoId) {
   // 关闭WebSocket连接
   if (websockets[videoId]) {
     if (websockets[videoId].readyState === WebSocket.OPEN) {
-      websockets[videoId].send(new Uint8Array(Buffer.from('END_OF_AUDIO')));
+      // 使用TextEncoder替代Node.js的Buffer
+      const encoder = new TextEncoder();
+      websockets[videoId].send(new Uint8Array(encoder.encode('END_OF_AUDIO')));
       websockets[videoId].close();
     }
     delete websockets[videoId];
@@ -307,6 +344,8 @@ function stopProcessing(video, videoId) {
 
 // 更新字幕
 function updateSubtitle(videoId, text) {
+  log(`更新字幕 [${videoId}]: "${text}"`);
+  
   const subtitleContainer = subtitleContainers[videoId];
   if (subtitleContainer) {
     const subtitle = subtitleContainer.querySelector('.whisper-web-subtitle');
@@ -315,10 +354,14 @@ function updateSubtitle(videoId, text) {
     if (text && text.trim() !== '') {
       subtitle.textContent = text.trim();
       subtitleContainer.style.display = 'block';
+      log(`字幕已显示 [${videoId}]`);
     } else {
       subtitle.textContent = '';
       subtitleContainer.style.display = 'none';
+      log(`字幕已隐藏 [${videoId}]`);
     }
+  } else {
+    log(`未找到字幕容器 [${videoId}]`);
   }
 }
 
@@ -376,9 +419,20 @@ function removeAllSubtitles() {
 // 创建音频流轨道
 function createAudioStreamTrack(audioContext, processor) {
   try {
+    log('开始创建音频流轨道');
     const dest = audioContext.createMediaStreamDestination();
     processor.connect(dest);
-    return dest.stream.getAudioTracks()[0];
+    
+    const tracks = dest.stream.getAudioTracks();
+    log(`创建的音频轨道数量: ${tracks.length}`);
+    
+    if (tracks.length === 0) {
+      log('警告: 未能创建音频轨道');
+      return null;
+    }
+    
+    log(`音频轨道已创建: ${tracks[0].label}`);
+    return tracks[0];
   } catch (error) {
     log('创建音频流轨道时出错: ' + error.message);
     return null;

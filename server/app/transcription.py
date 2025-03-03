@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class WhisperTranscriber:
-    def __init__(self, model_size: str = "base", device: str = "cpu", compute_type: str = "int8"):
+    def __init__(self, model_size: str = "base", device: str = "cuda", compute_type: str = "float16"):
         """
         初始化Whisper转录器
         
