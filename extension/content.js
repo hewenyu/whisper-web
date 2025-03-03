@@ -87,11 +87,13 @@ function setupVideoElement(video) {
   const subtitleContainer = document.createElement('div');
   subtitleContainer.className = `whisper-web-subtitle-container ${settings.subtitlePosition}`;
   subtitleContainer.style.display = 'none';
+  subtitleContainer.style.zIndex = '9999';  // 确保字幕在最上层
   
   // 创建字幕元素
   const subtitle = document.createElement('div');
   subtitle.className = 'whisper-web-subtitle';
   subtitle.style.fontSize = `${settings.fontSize}px`;
+  subtitle.textContent = '字幕将在这里显示';  // 添加默认文本
   
   subtitleContainer.appendChild(subtitle);
   subtitleContainers[videoId] = subtitleContainer;
@@ -122,6 +124,13 @@ function setupVideoElement(video) {
   // 将元素添加到视频容器
   const videoContainer = video.parentElement;
   videoContainer.style.position = 'relative';
+  
+  // 确保字幕容器在视频上方正确显示
+  subtitleContainer.style.position = 'absolute';
+  subtitleContainer.style.left = '0';
+  subtitleContainer.style.width = '100%';
+  subtitleContainer.style.textAlign = 'center';
+  
   videoContainer.appendChild(subtitleContainer);
   videoContainer.appendChild(controls);
   
@@ -156,6 +165,9 @@ function startProcessing(video, videoId) {
     processingStatus[videoId] = true;
     updateControlsStatus(videoId, 'processing');
     
+    // 显示测试字幕，验证字幕显示功能
+    updateSubtitle(videoId, '正在连接字幕服务...');
+    
     // 创建WebSocket连接
     const serverUrl = settings.serverUrl.replace(/^https?:\/\//, '');
     log('使用服务器URL: ' + serverUrl);
@@ -171,6 +183,7 @@ function startProcessing(video, videoId) {
     
     log('连接WebSocket: ' + wsUrl);
     const ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer'; // 确保正确处理二进制数据
     websockets[videoId] = ws;
     
     ws.onopen = function() {
@@ -198,6 +211,28 @@ function startProcessing(video, videoId) {
         mimeType: 'audio/webm;codecs=opus'
       };
       
+      // 检查浏览器支持的MIME类型
+      let mimeType = 'audio/webm;codecs=opus';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'audio/webm';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = '';
+          log('警告: 浏览器不支持WebM格式，将使用默认格式');
+        } else {
+          log('使用音频格式: audio/webm');
+        }
+      } else {
+        log('使用音频格式: audio/webm;codecs=opus');
+      }
+      
+      const mediaRecorderOptions = {
+        audioBitsPerSecond: 128000
+      };
+      
+      if (mimeType) {
+        mediaRecorderOptions.mimeType = mimeType;
+      }
+      
       // 确保音频流正确创建
       const audioStream = createAudioStreamTrack(audioCtx, processor);
       if (!audioStream) {
@@ -207,7 +242,7 @@ function startProcessing(video, videoId) {
         return;
       }
       
-      const mediaRecorder = new MediaRecorder(new MediaStream([audioStream]), options);
+      const mediaRecorder = new MediaRecorder(new MediaStream([audioStream]), mediaRecorderOptions);
       mediaRecorders[videoId] = mediaRecorder;
       
       // 处理音频数据
@@ -242,25 +277,42 @@ function startProcessing(video, videoId) {
     
     ws.onmessage = function(event) {
       try {
-        log('收到WebSocket消息: ' + event.data);
-        const data = JSON.parse(event.data);
-        
-        if (data.type === 'interim_result' || data.type === 'final_result') {
-          log('收到字幕结果类型: ' + data.type);
-          if (data.segments && data.segments.length > 0) {
-            // 显示最后一段文本
-            const lastSegment = data.segments[data.segments.length - 1];
-            log('收到字幕文本: ' + lastSegment.text);
-            updateSubtitle(videoId, lastSegment.text);
-          } else {
-            log('收到的字幕段落为空');
+        // 检查数据类型
+        if (typeof event.data === 'string') {
+          log('收到WebSocket文本消息: ' + event.data.substring(0, 100) + (event.data.length > 100 ? '...' : ''));
+          
+          try {
+            const data = JSON.parse(event.data);
+            
+            log('解析的JSON类型: ' + data.type);
+            
+            if (data.type === 'interim_result' || data.type === 'final_result') {
+              log('收到字幕结果类型: ' + data.type);
+              if (data.segments && data.segments.length > 0) {
+                // 显示最后一段文本
+                const lastSegment = data.segments[data.segments.length - 1];
+                log('收到字幕文本: ' + lastSegment.text);
+                updateSubtitle(videoId, lastSegment.text);
+              } else {
+                log('收到的字幕段落为空');
+              }
+            } else if (data.type === 'error') {
+              log('错误: ' + data.message);
+              updateSubtitle(videoId, '字幕服务错误，请重试');
+              stopProcessing(video, videoId);
+            } else {
+              log('收到未知类型的消息: ' + data.type);
+            }
+          } catch (jsonError) {
+            log('解析JSON时出错: ' + jsonError.message);
+            log('原始消息: ' + event.data);
           }
-        } else if (data.type === 'error') {
-          log('错误: ' + data.message);
-          updateSubtitle(videoId, '字幕服务错误，请重试');
-          stopProcessing(video, videoId);
+        } else if (event.data instanceof ArrayBuffer) {
+          log('收到WebSocket二进制消息: ' + event.data.byteLength + ' 字节');
+        } else if (event.data instanceof Blob) {
+          log('收到WebSocket Blob消息: ' + event.data.size + ' 字节');
         } else {
-          log('收到未知类型的消息: ' + data.type);
+          log('收到未知类型的WebSocket消息: ' + typeof event.data);
         }
       } catch (error) {
         log('处理WebSocket消息时出错: ' + error.message);
@@ -325,8 +377,9 @@ function stopProcessing(video, videoId) {
   if (websockets[videoId]) {
     if (websockets[videoId].readyState === WebSocket.OPEN) {
       // 使用TextEncoder替代Node.js的Buffer
+      log('发送END_OF_AUDIO信号');
       const encoder = new TextEncoder();
-      websockets[videoId].send(new Uint8Array(encoder.encode('END_OF_AUDIO')));
+      websockets[videoId].send('END_OF_AUDIO');  // 直接发送字符串，而不是二进制数据
       websockets[videoId].close();
     }
     delete websockets[videoId];
@@ -354,6 +407,20 @@ function updateSubtitle(videoId, text) {
     if (text && text.trim() !== '') {
       subtitle.textContent = text.trim();
       subtitleContainer.style.display = 'block';
+      
+      // 检查字幕容器是否可见
+      setTimeout(() => {
+        const isVisible = subtitleContainer.offsetWidth > 0 && subtitleContainer.offsetHeight > 0;
+        log(`字幕容器可见性 [${videoId}]: ${isVisible ? '可见' : '不可见'}`);
+        
+        if (!isVisible) {
+          log('字幕容器不可见，尝试强制显示');
+          subtitleContainer.style.display = 'block';
+          subtitleContainer.style.visibility = 'visible';
+          subtitleContainer.style.opacity = '1';
+        }
+      }, 100);
+      
       log(`字幕已显示 [${videoId}]`);
     } else {
       subtitle.textContent = '';
