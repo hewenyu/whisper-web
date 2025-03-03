@@ -152,14 +152,15 @@ function startProcessing(video, videoId) {
     updateControlsStatus(videoId, 'processing');
     
     // 创建WebSocket连接
-    const ws = new WebSocket(`ws://${settings.serverUrl.replace(/^https?:\/\//, '')}/ws/transcribe/${videoId}`);
+    const serverUrl = settings.serverUrl.replace(/^https?:\/\//, '');
+    const ws = new WebSocket(`ws://${serverUrl}/ws/transcribe/${videoId}`);
     websockets[videoId] = ws;
     
     ws.onopen = function() {
       log('WebSocket连接已建立');
       
       // 创建音频上下文
-      const audioCtx = new AudioContext();
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       audioContexts[videoId] = audioCtx;
       
       // 创建媒体源
@@ -172,6 +173,7 @@ function startProcessing(video, videoId) {
       
       // 创建处理器
       const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      processor.connect(audioCtx.destination);
       
       // 创建媒体录制器
       const options = {
@@ -179,7 +181,16 @@ function startProcessing(video, videoId) {
         mimeType: 'audio/webm;codecs=opus'
       };
       
-      const mediaRecorder = new MediaRecorder(new MediaStream([createAudioStreamTrack(audioCtx, processor)]), options);
+      // 确保音频流正确创建
+      const audioStream = createAudioStreamTrack(audioCtx, processor);
+      if (!audioStream) {
+        log('无法创建音频流');
+        updateSubtitle(videoId, '无法创建音频流，请重试');
+        stopProcessing(video, videoId);
+        return;
+      }
+      
+      const mediaRecorder = new MediaRecorder(new MediaStream([audioStream]), options);
       mediaRecorders[videoId] = mediaRecorder;
       
       // 处理音频数据
@@ -212,6 +223,7 @@ function startProcessing(video, videoId) {
           // 显示最后一段文本
           const lastSegment = data.segments[data.segments.length - 1];
           updateSubtitle(videoId, lastSegment.text);
+          log('收到字幕: ' + lastSegment.text);
         }
       } else if (data.type === 'error') {
         log('错误: ' + data.message);
@@ -298,13 +310,14 @@ function updateSubtitle(videoId, text) {
   const subtitleContainer = subtitleContainers[videoId];
   if (subtitleContainer) {
     const subtitle = subtitleContainer.querySelector('.whisper-web-subtitle');
-    subtitle.textContent = text;
     
-    // 如果文本为空，隐藏字幕容器
-    if (text === '') {
-      subtitleContainer.style.display = 'none';
-    } else {
+    // 确保文本内容被正确设置
+    if (text && text.trim() !== '') {
+      subtitle.textContent = text.trim();
       subtitleContainer.style.display = 'block';
+    } else {
+      subtitle.textContent = '';
+      subtitleContainer.style.display = 'none';
     }
   }
 }
@@ -362,9 +375,14 @@ function removeAllSubtitles() {
 
 // 创建音频流轨道
 function createAudioStreamTrack(audioContext, processor) {
-  const destination = audioContext.createMediaStreamDestination();
-  processor.connect(destination);
-  return destination.stream.getAudioTracks()[0];
+  try {
+    const dest = audioContext.createMediaStreamDestination();
+    processor.connect(dest);
+    return dest.stream.getAudioTracks()[0];
+  } catch (error) {
+    log('创建音频流轨道时出错: ' + error.message);
+    return null;
+  }
 }
 
 // 日志函数

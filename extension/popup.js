@@ -45,32 +45,7 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // 保存设置按钮
   saveSettingsBtn.addEventListener('click', function() {
-    const settings = {
-      serverUrl: serverUrlInput.value,
-      language: languageSelect.value,
-      subtitlePosition: subtitlePositionSelect.value,
-      fontSize: fontSizeInput.value
-    };
-    
-    chrome.storage.local.set({ settings: settings }, function() {
-      // 显示保存成功提示
-      saveSettingsBtn.textContent = '已保存';
-      setTimeout(function() {
-        saveSettingsBtn.textContent = '保存设置';
-      }, 1500);
-      
-      // 如果字幕已激活，则向当前标签页发送更新设置消息
-      chrome.storage.local.get(['isActive'], function(result) {
-        if (result.isActive) {
-          chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
-            chrome.tabs.sendMessage(tabs[0].id, { 
-              action: 'updateSettings',
-              settings: settings
-            });
-          });
-        }
-      });
-    });
+    saveSettings();
   });
   
   // 加载设置
@@ -103,5 +78,71 @@ document.addEventListener('DOMContentLoaded', function() {
       activateBtn.textContent = '激活字幕';
       activateBtn.classList.remove('active');
     }
+  }
+  
+  // 保存设置
+  function saveSettings() {
+    const serverUrl = document.getElementById('server-url').value.trim();
+    const language = document.getElementById('language').value;
+    const subtitlePosition = document.getElementById('subtitle-position').value;
+    const fontSize = document.getElementById('font-size').value;
+    
+    // 验证服务器URL
+    if (!serverUrl) {
+      showError('请输入服务器URL');
+      return;
+    }
+    
+    // 确保URL格式正确
+    let formattedUrl = serverUrl;
+    if (!serverUrl.startsWith('http://') && !serverUrl.startsWith('https://')) {
+      formattedUrl = 'http://' + serverUrl;
+    }
+    
+    // 移除URL末尾的斜杠
+    formattedUrl = formattedUrl.replace(/\/$/, '');
+    
+    const settings = {
+      serverUrl: formattedUrl,
+      language: language,
+      subtitlePosition: subtitlePosition,
+      fontSize: fontSize
+    };
+    
+    chrome.storage.sync.set({ settings: settings }, function() {
+      showSuccess('设置已保存');
+      
+      // 通知内容脚本更新设置
+      chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+        chrome.tabs.sendMessage(tabs[0].id, { 
+          action: 'updateSettings', 
+          settings: settings 
+        });
+      });
+    });
+  }
+
+  // 显示错误消息
+  function showError(message) {
+    const statusElement = document.getElementById('status-message');
+    statusElement.textContent = message;
+    statusElement.className = 'error';
+    statusElement.style.display = 'block';
+    
+    setTimeout(function() {
+      statusElement.style.display = 'none';
+    }, 3000);
+  }
+
+  // 显示成功消息
+  function showSuccess(message) {
+    const statusElement = document.getElementById('status-message');
+    statusElement.textContent = message;
+    statusElement.className = 'success';
+    statusElement.style.display = 'block';
+    
+    setTimeout(function() {
+      statusElement.style.display = 'none';
+    }, 3000);
   }
 }); 
