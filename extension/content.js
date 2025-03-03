@@ -168,26 +168,68 @@ function startProcessing(video, videoId) {
     // 显示测试字幕，验证字幕显示功能
     updateSubtitle(videoId, '正在连接字幕服务...');
     
-    // 创建WebSocket连接
+    // 检查服务器状态
     const serverUrl = settings.serverUrl.replace(/^https?:\/\//, '');
-    log('使用服务器URL: ' + serverUrl);
+    log('检查服务器状态: ' + serverUrl);
+    
+    // 创建一个临时的fetch请求来检查服务器是否在线
+    fetch(`http://${serverUrl}/health`, { 
+      method: 'GET',
+      mode: 'no-cors' // 使用no-cors模式避免CORS问题
+    })
+    .then(response => {
+      log('服务器状态检查响应: ' + response.status);
+    })
+    .catch(error => {
+      log('服务器状态检查错误: ' + error.message);
+      // 即使检查失败，也继续尝试连接WebSocket
+    });
+    
+    // 创建WebSocket连接
+    const wsUrl = settings.serverUrl.replace(/^https?:\/\//, '');
+    log('使用服务器URL: ' + wsUrl);
     
     // 确保使用正确的端口
-    let wsUrl;
-    if (serverUrl.includes(':')) {
-      wsUrl = `ws://${serverUrl}/ws/transcribe/${videoId}`;
+    let wsUrlFinal;
+    if (wsUrl.includes(':')) {
+      wsUrlFinal = `ws://${wsUrl}/ws/transcribe/${videoId}`;
     } else {
       // 默认使用8000端口
-      wsUrl = `ws://${serverUrl}:8000/ws/transcribe/${videoId}`;
+      wsUrlFinal = `ws://${wsUrl}:8000/ws/transcribe/${videoId}`;
     }
     
-    log('连接WebSocket: ' + wsUrl);
-    const ws = new WebSocket(wsUrl);
+    log('连接WebSocket: ' + wsUrlFinal);
+    const ws = new WebSocket(wsUrlFinal);
     ws.binaryType = 'arraybuffer'; // 确保正确处理二进制数据
     websockets[videoId] = ws;
     
     ws.onopen = function() {
       log('WebSocket连接已建立');
+      
+      // 发送测试消息，检查服务器响应
+      log('发送测试消息到服务器');
+      ws.send(JSON.stringify({ type: 'test', message: 'Hello from Whisper Web Extension' }));
+      
+      // 模拟字幕显示，验证字幕功能
+      setTimeout(() => {
+        log('模拟字幕显示');
+        updateSubtitle(videoId, '这是一个测试字幕，验证字幕显示功能是否正常。');
+        
+        // 5秒后更新字幕
+        setTimeout(() => {
+          updateSubtitle(videoId, '如果您能看到这条字幕，说明字幕显示功能正常工作。');
+        }, 5000);
+      }, 2000);
+      
+      // 发送心跳消息，确保连接保持活跃
+      const heartbeatInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          log('发送心跳消息');
+          ws.send(JSON.stringify({ type: 'heartbeat' }));
+        } else {
+          clearInterval(heartbeatInterval);
+        }
+      }, 10000); // 每10秒发送一次
       
       // 创建音频上下文
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -256,8 +298,15 @@ function startProcessing(video, videoId) {
       mediaRecorder.ondataavailable = function(e) {
         if (e.data.size > 0) {
           if (ws.readyState === WebSocket.OPEN) {
-            log(`发送音频数据: ${e.data.size} 字节`);
-            ws.send(e.data);
+            log(`发送音频数据: ${e.data.size} 字节，类型: ${e.data.type}`);
+            
+            // 直接发送音频数据
+            try {
+              ws.send(e.data);
+              log('音频数据发送成功');
+            } catch (error) {
+              log(`发送音频数据时出错: ${error.message}`);
+            }
           } else {
             log(`WebSocket未连接，无法发送音频数据: ${e.data.size} 字节`);
           }
@@ -293,6 +342,12 @@ function startProcessing(video, videoId) {
                 const lastSegment = data.segments[data.segments.length - 1];
                 log('收到字幕文本: ' + lastSegment.text);
                 updateSubtitle(videoId, lastSegment.text);
+                
+                // 如果是最终结果，保存所有字幕段落
+                if (data.type === 'final_result') {
+                  log(`收到最终字幕结果，共 ${data.segments.length} 段`);
+                  // 这里可以添加保存字幕的逻辑
+                }
               } else {
                 log('收到的字幕段落为空');
               }
@@ -300,6 +355,12 @@ function startProcessing(video, videoId) {
               log('错误: ' + data.message);
               updateSubtitle(videoId, '字幕服务错误，请重试');
               stopProcessing(video, videoId);
+            } else if (data.type === 'test_response') {
+              log('收到测试响应: ' + data.message);
+            } else if (data.type === 'heartbeat_response') {
+              log('收到心跳响应: ' + data.message);
+            } else if (data.type === 'info') {
+              log('收到信息: ' + data.message);
             } else {
               log('收到未知类型的消息: ' + data.type);
             }
@@ -320,7 +381,17 @@ function startProcessing(video, videoId) {
     };
     
     ws.onerror = function(error) {
-      log('WebSocket错误: ' + error);
+      log('WebSocket错误: ' + JSON.stringify(error));
+      
+      // 尝试获取更多错误信息
+      if (error.message) {
+        log('错误消息: ' + error.message);
+      }
+      
+      if (error.target && error.target.readyState) {
+        log('WebSocket状态: ' + error.target.readyState);
+      }
+      
       updateSubtitle(videoId, '连接字幕服务失败');
       stopProcessing(video, videoId);
     };

@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class WhisperTranscriber:
-    def __init__(self, model_size: str = "base", device: str = "cuda", compute_type: str = "float16"):
+    def __init__(self, model_size: str = None, device: str = None, compute_type: str = None):
         """
         初始化Whisper转录器
         
@@ -27,12 +27,26 @@ class WhisperTranscriber:
             device: 使用的设备 ("cpu" 或 "cuda")
             compute_type: 计算类型 ("float16", "int8")
         """
-        self.model_size = model_size
-        self.device = device
-        self.compute_type = compute_type
+        # 从环境变量读取配置，如果没有提供参数
+        self.model_size = model_size or os.getenv("MODEL_SIZE", "base")
+        self.device = device or os.getenv("DEVICE", "cpu")
+        self.compute_type = compute_type or os.getenv("COMPUTE_TYPE", "int8")
         
-        logger.info(f"Loading Whisper model: {model_size} on {device} with {compute_type}")
-        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        # 检查CUDA是否可用，如果不可用则强制使用CPU
+        if self.device == "cuda":
+            try:
+                import torch
+                if not torch.cuda.is_available():
+                    logger.warning("CUDA is not available, falling back to CPU")
+                    self.device = "cpu"
+                    self.compute_type = "int8"
+            except ImportError:
+                logger.warning("PyTorch not found or CUDA is not available, falling back to CPU")
+                self.device = "cpu"
+                self.compute_type = "int8"
+        
+        logger.info(f"Loading Whisper model: {self.model_size} on {self.device} with {self.compute_type}")
+        self.model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
         
         # 确保临时目录存在
         os.makedirs("temp", exist_ok=True)

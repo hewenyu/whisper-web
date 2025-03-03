@@ -118,33 +118,74 @@ async def websocket_transcribe(websocket: WebSocket, client_id: str):
         audio_data = b""
         
         while True:
-            # 接收音频数据
-            data = await websocket.receive_bytes()
+            # 接收数据（可能是文本或二进制）
+            message = await websocket.receive()
             
-            if data == b"END_OF_AUDIO":
-                # 音频传输结束，执行转录
-                with open(temp_path, "wb") as f:
-                    f.write(audio_data)
+            # 检查消息类型
+            if 'text' in message:
+                # 处理文本消息
+                text_data = message['text']
+                logger.info(f"Received text message: {text_data}")
                 
-                # 执行转录
-                result = await transcriber.transcribe_file(
-                    file_path=temp_path,
-                    language=None,
-                    task="transcribe"
-                )
+                if text_data == "END_OF_AUDIO":
+                    # 音频传输结束，执行转录
+                    if len(audio_data) > 0:
+                        with open(temp_path, "wb") as f:
+                            f.write(audio_data)
+                        
+                        # 执行转录
+                        result = await transcriber.transcribe_file(
+                            file_path=temp_path,
+                            language=None,
+                            task="transcribe"
+                        )
+                        
+                        # 发送结果
+                        await websocket.send_json({
+                            "type": "final_result",
+                            "segments": result
+                        })
+                        
+                        # 清理
+                        audio_data = b""
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                    else:
+                        await websocket.send_json({
+                            "type": "info",
+                            "message": "No audio data received"
+                        })
+                elif text_data.startswith("{") and text_data.endswith("}"):
+                    # 处理JSON消息
+                    try:
+                        json_data = json.loads(text_data)
+                        if json_data.get("type") == "test":
+                            # 响应测试消息
+                            await websocket.send_json({
+                                "type": "test_response",
+                                "message": "Server received test message"
+                            })
+                        elif json_data.get("type") == "heartbeat":
+                            # 响应心跳消息
+                            await websocket.send_json({
+                                "type": "heartbeat_response",
+                                "message": "Server is alive"
+                            })
+                    except json.JSONDecodeError:
+                        logger.error(f"Invalid JSON: {text_data}")
+                else:
+                    # 其他文本消息
+                    await websocket.send_json({
+                        "type": "info",
+                        "message": f"Received text: {text_data}"
+                    })
+            elif 'bytes' in message:
+                # 处理二进制消息（音频数据）
+                binary_data = message['bytes']
+                logger.info(f"Received binary data: {len(binary_data)} bytes")
                 
-                # 发送结果
-                await websocket.send_json({
-                    "type": "final_result",
-                    "segments": result
-                })
-                
-                # 清理
-                audio_data = b""
-                os.remove(temp_path)
-            else:
                 # 累积音频数据
-                audio_data += data
+                audio_data += binary_data
                 
                 # 如果累积了足够的数据，可以进行实时转录
                 if len(audio_data) > 1024 * 50:  # 例如，每50KB进行一次转录
@@ -163,6 +204,12 @@ async def websocket_transcribe(websocket: WebSocket, client_id: str):
                         "type": "interim_result",
                         "segments": result
                     })
+            else:
+                logger.warning(f"Received unknown message type: {message}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Unknown message format"
+                })
     
     except WebSocketDisconnect:
         logger.info(f"Client {client_id} disconnected")
