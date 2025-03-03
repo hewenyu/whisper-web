@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Whisper Web</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Whisper Web</h1>
+      <p>为网页视频添加实时字幕</p>
+    </header>
+    
+    <div id="status-message" style="display: none;"></div>
+    
+    <main>
+      <div class="status-container">
+        <div class="status-indicator" id="statusIndicator"></div>
+        <span id="statusText">未激活</span>
+      </div>
+      
+      <div class="settings">
+        <div class="setting-item">
+          <label for="serverUrl">服务器地址:</label>
+          <input type="text" id="serverUrl" placeholder="http://localhost:8000">
+        </div>
+        
+        <div class="setting-item">
+          <label for="language">语言:</label>
+          <select id="language">
+            <option value="auto">自动检测</option>
+            <option value="zh">中文</option>
+            <option value="en">英文</option>
+            <option value="ja">日语</option>
+            <option value="ko">韩语</option>
+            <option value="fr">法语</option>
+            <option value="de">德语</option>
+            <option value="es">西班牙语</option>
+            <option value="ru">俄语</option>
+          </select>
+        </div>
+        
+        <div class="setting-item">
+          <label for="subtitlePosition">字幕位置:</label>
+          <select id="subtitlePosition">
+            <option value="bottom">底部</option>
+            <option value="top">顶部</option>
+          </select>
+        </div>
+        
+        <div class="setting-item">
+          <label for="fontSize">字体大小:</label>
+          <input type="range" id="fontSize" min="12" max="36" value="20">
+          <span id="fontSizeValue">20px</span>
+        </div>
+      </div>
+      
+      <div class="buttons">
+        <button id="activateBtn" class="primary-btn">激活字幕</button>
+        <button id="saveSettingsBtn">保存设置</button>
+      </div>
+    </main>
+    
+    <footer>
+      <p>基于 faster-whisper 的在线字幕工具</p>
+    </footer>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html> 
