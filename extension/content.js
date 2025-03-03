@@ -13,6 +13,14 @@ let websockets = {};
 let audioContexts = {};
 let mediaRecorders = {};
 let processingStatus = {};
+// 跟踪哪些视频元素已经连接到音频上下文
+let connectedVideoElements = {};
+// 存储处理器节点
+let processorNodes = {};
+// 存储音频处理器
+let audioProcessors = {};
+// 跟踪字幕是否应该被显示
+let subtitleEnabled = {};
 
 // 初始化
 function init() {
@@ -59,6 +67,12 @@ function init() {
   observer.observe(document.body, {
     childList: true,
     subtree: true
+  });
+  
+  // 监听页面卸载事件，确保清理资源
+  window.addEventListener('beforeunload', function() {
+    log('页面即将卸载，清理资源');
+    removeAllSubtitles();
   });
 }
 
@@ -121,24 +135,21 @@ function setupVideoElement(video) {
   controls.appendChild(statusIndicator);
   controls.appendChild(toggleButton);
   
-  // 将元素添加到视频容器
-  const videoContainer = video.parentElement;
-  videoContainer.style.position = 'relative';
+  // 保存控件元素引用
+  controlsElements[videoId] = controls;
   
-  // 确保字幕容器在视频上方正确显示
-  subtitleContainer.style.position = 'absolute';
-  subtitleContainer.style.left = '0';
-  subtitleContainer.style.width = '100%';
-  subtitleContainer.style.textAlign = 'center';
-  
+  // 将字幕容器和控制元素添加到视频容器
+  const videoContainer = video.parentElement || document.body;
   videoContainer.appendChild(subtitleContainer);
   videoContainer.appendChild(controls);
   
-  // 存储引用
-  controlsElements[videoId] = controls;
-  processingStatus[videoId] = false;
+  // 初始化字幕启用状态
+  subtitleEnabled[videoId] = false;
   
-  // 监听视频播放/暂停事件
+  // 设置音频处理 - 在这里创建音频上下文和处理器，但默认不处理数据
+  setupAudioProcessor(video, videoId);
+  
+  // 监听视频事件
   video.addEventListener('play', function() {
     if (processingStatus[videoId]) {
       resumeProcessing(video, videoId);
@@ -158,14 +169,132 @@ function setupVideoElement(video) {
   });
 }
 
+// 设置音频处理器
+function setupAudioProcessor(video, videoId) {
+  try {
+    // 检查视频元素是否有效
+    if (!video || !video.tagName || video.tagName.toLowerCase() !== 'video') {
+      log(`无效的视频元素 [${videoId}]`);
+      return;
+    }
+    
+    // 如果已经设置了音频处理器，则不重复设置
+    if (audioProcessors[videoId]) {
+      log(`音频处理器 [${videoId}] 已存在`);
+      return;
+    }
+    
+    log(`设置音频处理器 [${videoId}]`);
+    
+    // 创建音频上下文
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: 16000 // 使用16kHz采样率，与服务器期望的一致
+    });
+    audioContexts[videoId] = audioCtx;
+    
+    // 创建媒体源
+    const source = audioCtx.createMediaElementSource(video);
+    
+    // 创建分析器节点
+    const analyser = audioCtx.createAnalyser();
+    
+    // 创建脚本处理器节点
+    const bufferSize = 4096;
+    const processorNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+    
+    // 连接节点 - 确保音频同时输出到扬声器和处理节点
+    // 源 -> 分析器 -> 目标(扬声器)
+    source.connect(analyser);
+    analyser.connect(audioCtx.destination);
+    
+    // 源 -> 处理器 -> 目标(用于处理，不连接到扬声器)
+    source.connect(processorNode);
+    // 处理器需要连接到目标，但我们使用一个静音的增益节点，这样不会影响原始音频
+    const silentGain = audioCtx.createGain();
+    silentGain.gain.value = 0; // 设置增益为0，完全静音
+    processorNode.connect(silentGain);
+    silentGain.connect(audioCtx.destination);
+    
+    // 设置音频处理函数 - 默认不做任何处理
+    processorNode.onaudioprocess = function(e) {
+      // 默认不处理数据，只在active为true时处理
+      // 这个函数会在startProcessing中被替换
+    };
+    
+    // 保存音频处理器
+    audioProcessors[videoId] = {
+      audioCtx: audioCtx,
+      source: source,
+      analyser: analyser,
+      processorNode: processorNode,
+      silentGain: silentGain,
+      active: false
+    };
+    
+    // 保存处理器节点引用
+    processorNodes[videoId] = processorNode;
+    
+    // 标记视频元素已连接
+    connectedVideoElements[videoId] = true;
+    
+    log(`音频处理器 [${videoId}] 设置完成`);
+  } catch (error) {
+    log(`设置音频处理器时出错 [${videoId}]: ${error.message}`);
+  }
+}
+
 // 开始处理视频音频
 function startProcessing(video, videoId) {
   try {
+    // 检查视频元素是否有效
+    if (!video || !video.tagName || video.tagName.toLowerCase() !== 'video') {
+      log(`无效的视频元素 [${videoId}]`);
+      return;
+    }
+    
+    // 检查视频是否有音轨
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      log(`视频元素 [${videoId}] 尚未加载`);
+      updateSubtitle(videoId, '等待视频加载...');
+      // 等待视频加载
+      const checkVideo = setInterval(() => {
+        if (video.videoWidth > 0 && video.videoHeight > 0) {
+          clearInterval(checkVideo);
+          startProcessing(video, videoId);
+        }
+      }, 1000);
+      return;
+    }
+    
+    // 检查音频处理器是否已设置
+    if (!audioProcessors[videoId]) {
+      log(`音频处理器 [${videoId}] 不存在，尝试设置`);
+      setupAudioProcessor(video, videoId);
+      
+      // 如果仍然无法设置，则退出
+      if (!audioProcessors[videoId]) {
+        log(`无法设置音频处理器 [${videoId}]`);
+        updateSubtitle(videoId, '无法设置音频处理，请刷新页面后重试');
+        return;
+      }
+    }
+    
     // 更新状态
     processingStatus[videoId] = true;
+    // 设置字幕启用标志
+    subtitleEnabled[videoId] = true;
     updateControlsStatus(videoId, 'processing');
     
-    // 显示测试字幕，验证字幕显示功能
+    // 立即更新按钮文本
+    const controls = controlsElements[videoId];
+    if (controls) {
+      const button = controls.querySelector('button');
+      if (button) {
+        button.textContent = '停止字幕';
+      }
+    }
+    
+    // 显示连接中的提示
     updateSubtitle(videoId, '正在连接字幕服务...');
     
     // 检查服务器状态
@@ -182,7 +311,8 @@ function startProcessing(video, videoId) {
     })
     .catch(error => {
       log('服务器状态检查错误: ' + error.message);
-      // 即使检查失败，也继续尝试连接WebSocket
+      // 显示警告但继续尝试连接WebSocket
+      updateSubtitle(videoId, '警告: 服务器连接检查失败，但仍将尝试连接');
     });
     
     // 创建WebSocket连接
@@ -192,10 +322,10 @@ function startProcessing(video, videoId) {
     // 确保使用正确的端口
     let wsUrlFinal;
     if (wsUrl.includes(':')) {
-      wsUrlFinal = `ws://${wsUrl}/ws/transcribe/${videoId}`;
+      wsUrlFinal = `ws://${wsUrl}/ws/stream/${videoId}`;
     } else {
       // 默认使用8000端口
-      wsUrlFinal = `ws://${wsUrl}:8000/ws/transcribe/${videoId}`;
+      wsUrlFinal = `ws://${wsUrl}:8000/ws/stream/${videoId}`;
     }
     
     log('连接WebSocket: ' + wsUrlFinal);
@@ -210,16 +340,8 @@ function startProcessing(video, videoId) {
       log('发送测试消息到服务器');
       ws.send(JSON.stringify({ type: 'test', message: 'Hello from Whisper Web Extension' }));
       
-      // 模拟字幕显示，验证字幕功能
-      setTimeout(() => {
-        log('模拟字幕显示');
-        updateSubtitle(videoId, '这是一个测试字幕，验证字幕显示功能是否正常。');
-        
-        // 5秒后更新字幕
-        setTimeout(() => {
-          updateSubtitle(videoId, '如果您能看到这条字幕，说明字幕显示功能正常工作。');
-        }, 5000);
-      }, 2000);
+      // 更新字幕，告知用户连接已建立，等待音频
+      updateSubtitle(videoId, '字幕服务已连接，等待音频...');
       
       // 发送心跳消息，确保连接保持活跃
       const heartbeatInterval = setInterval(() => {
@@ -231,93 +353,38 @@ function startProcessing(video, videoId) {
         }
       }, 10000); // 每10秒发送一次
       
-      // 创建音频上下文
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      audioContexts[videoId] = audioCtx;
+      // 获取音频处理器
+      const processor = audioProcessors[videoId];
       
-      // 创建媒体源
-      const source = audioCtx.createMediaElementSource(video);
-      
-      // 创建分析器
-      const analyser = audioCtx.createAnalyser();
-      source.connect(analyser);
-      analyser.connect(audioCtx.destination);
-      
-      // 创建处理器
-      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-      processor.connect(audioCtx.destination);
-      
-      // 创建媒体录制器
-      const options = {
-        audioBitsPerSecond: 128000,
-        mimeType: 'audio/webm;codecs=opus'
-      };
-      
-      // 检查浏览器支持的MIME类型
-      let mimeType = 'audio/webm;codecs=opus';
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'audio/webm';
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-          mimeType = '';
-          log('警告: 浏览器不支持WebM格式，将使用默认格式');
-        } else {
-          log('使用音频格式: audio/webm');
-        }
-      } else {
-        log('使用音频格式: audio/webm;codecs=opus');
-      }
-      
-      const mediaRecorderOptions = {
-        audioBitsPerSecond: 128000
-      };
-      
-      if (mimeType) {
-        mediaRecorderOptions.mimeType = mimeType;
-      }
-      
-      // 确保音频流正确创建
-      const audioStream = createAudioStreamTrack(audioCtx, processor);
-      if (!audioStream) {
-        log('无法创建音频流');
-        updateSubtitle(videoId, '无法创建音频流，请重试');
-        stopProcessing(video, videoId);
-        return;
-      }
-      
-      const mediaRecorder = new MediaRecorder(new MediaStream([audioStream]), mediaRecorderOptions);
-      mediaRecorders[videoId] = mediaRecorder;
-      
-      // 处理音频数据
-      processor.onaudioprocess = function(e) {
-        if (mediaRecorder.state === 'recording') {
-          analyser.getByteTimeDomainData(new Uint8Array(analyser.frequencyBinCount));
-        }
-      };
-      
-      // 发送录制的数据
-      mediaRecorder.ondataavailable = function(e) {
-        if (e.data.size > 0) {
-          if (ws.readyState === WebSocket.OPEN) {
-            log(`发送音频数据: ${e.data.size} 字节，类型: ${e.data.type}`);
-            
-            // 直接发送音频数据
-            try {
-              ws.send(e.data);
-              log('音频数据发送成功');
-            } catch (error) {
-              log(`发送音频数据时出错: ${error.message}`);
-            }
-          } else {
-            log(`WebSocket未连接，无法发送音频数据: ${e.data.size} 字节`);
+      // 设置音频处理函数 - 现在开始处理数据
+      processor.processorNode.onaudioprocess = function(e) {
+        if (processor.active && ws.readyState === WebSocket.OPEN) {
+          // 获取输入缓冲区
+          const inputBuffer = e.inputBuffer;
+          // 获取第一个通道的数据
+          const inputData = inputBuffer.getChannelData(0);
+          
+          // 转换为16位整数
+          const pcmBuffer = new Int16Array(inputData.length);
+          for (let i = 0; i < inputData.length; i++) {
+            // 将-1.0到1.0的浮点数转换为-32768到32767的整数
+            pcmBuffer[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
           }
-        } else {
-          log('录制的音频数据为空');
+          
+          // 发送PCM数据
+          try {
+            ws.send(pcmBuffer.buffer);
+            log(`发送PCM音频数据: ${pcmBuffer.buffer.byteLength} 字节`);
+          } catch (error) {
+            log(`发送PCM音频数据时出错: ${error.message}`);
+          }
         }
       };
       
-      // 开始录制
-      mediaRecorder.start(1000);
-      log('开始录制音频，每1000ms发送一次');
+      // 标记处理器为活跃状态
+      processor.active = true;
+      
+      log('PCM音频处理已启动');
       
       // 更新控件
       const controls = controlsElements[videoId];
@@ -335,7 +402,21 @@ function startProcessing(video, videoId) {
             
             log('解析的JSON类型: ' + data.type);
             
-            if (data.type === 'interim_result' || data.type === 'final_result') {
+            // 如果字幕已被禁用，则不显示任何字幕
+            if (!subtitleEnabled[videoId]) {
+              log(`字幕已禁用 [${videoId}]，忽略收到的字幕数据`);
+              return;
+            }
+            
+            if (data.type === 'streaming_result') {
+              log('收到流式字幕结果');
+              if (data.text) {
+                log('收到字幕文本: ' + data.text);
+                updateSubtitle(videoId, data.text);
+              } else {
+                log('收到的字幕文本为空');
+              }
+            } else if (data.type === 'interim_result' || data.type === 'final_result') {
               log('收到字幕结果类型: ' + data.type);
               if (data.segments && data.segments.length > 0) {
                 // 显示最后一段文本
@@ -348,19 +429,32 @@ function startProcessing(video, videoId) {
                   log(`收到最终字幕结果，共 ${data.segments.length} 段`);
                   // 这里可以添加保存字幕的逻辑
                 }
+              } else if (data.type === 'final_result') {
+                // 最终结果但没有段落，可能是处理结束
+                log('收到最终结果信号，但没有字幕段落');
               } else {
                 log('收到的字幕段落为空');
               }
             } else if (data.type === 'error') {
               log('错误: ' + data.message);
-              updateSubtitle(videoId, '字幕服务错误，请重试');
-              stopProcessing(video, videoId);
+              
+              // 检查是否是音频处理错误
+              if (data.message && data.message.includes('unpack requires a buffer')) {
+                log('检测到音频格式错误，尝试重置处理');
+                resetProcessing(video, videoId);
+              } else {
+                updateSubtitle(videoId, '字幕服务错误，请重试');
+                stopProcessing(video, videoId);
+              }
             } else if (data.type === 'test_response') {
               log('收到测试响应: ' + data.message);
+              // 不再显示测试字幕
             } else if (data.type === 'heartbeat_response') {
               log('收到心跳响应: ' + data.message);
             } else if (data.type === 'info') {
               log('收到信息: ' + data.message);
+            } else if (data.type === 'reset_complete') {
+              log('重置完成');
             } else {
               log('收到未知类型的消息: ' + data.type);
             }
@@ -411,64 +505,103 @@ function startProcessing(video, videoId) {
 
 // 暂停处理
 function pauseProcessing(videoId) {
-  if (mediaRecorders[videoId] && mediaRecorders[videoId].state === 'recording') {
-    mediaRecorders[videoId].pause();
+  if (audioProcessors[videoId] && audioProcessors[videoId].active) {
+    // 标记处理器为非活跃状态
+    audioProcessors[videoId].active = false;
+    // 暂停字幕显示，但不完全禁用
+    // 我们不设置subtitleEnabled[videoId] = false，因为我们希望恢复时继续显示字幕
+    log(`暂停音频处理 [${videoId}]`);
   }
 }
 
 // 恢复处理
 function resumeProcessing(video, videoId) {
-  if (mediaRecorders[videoId] && mediaRecorders[videoId].state === 'paused') {
-    mediaRecorders[videoId].resume();
-  } else if (processingStatus[videoId] && (!mediaRecorders[videoId] || mediaRecorders[videoId].state === 'inactive')) {
+  if (processingStatus[videoId] && audioProcessors[videoId]) {
+    // 标记处理器为活跃状态
+    audioProcessors[videoId].active = true;
+    // 恢复字幕显示
+    subtitleEnabled[videoId] = true;
+    log(`恢复音频处理 [${videoId}]`);
+  } else if (processingStatus[videoId]) {
+    // 如果处理器不存在但处理状态为true，则重新启动处理
     startProcessing(video, videoId);
+    log(`重新开始音频处理 [${videoId}]`);
   }
 }
 
 // 停止处理
 function stopProcessing(video, videoId) {
   processingStatus[videoId] = false;
+  // 设置字幕禁用标志
+  subtitleEnabled[videoId] = false;
   updateControlsStatus(videoId, 'inactive');
   
-  // 停止媒体录制器
-  if (mediaRecorders[videoId]) {
-    if (mediaRecorders[videoId].state !== 'inactive') {
-      mediaRecorders[videoId].stop();
+  // 更新按钮文本
+  const controls = controlsElements[videoId];
+  if (controls) {
+    const button = controls.querySelector('button');
+    if (button) {
+      button.textContent = '开始字幕';
     }
-    delete mediaRecorders[videoId];
   }
   
-  // 关闭音频上下文
-  if (audioContexts[videoId]) {
-    audioContexts[videoId].close();
-    delete audioContexts[videoId];
+  // 停止音频处理
+  if (audioProcessors[videoId]) {
+    // 重置音频处理函数为空函数
+    audioProcessors[videoId].processorNode.onaudioprocess = function(e) {
+      // 不处理数据
+    };
+    
+    // 标记处理器为非活跃状态
+    audioProcessors[videoId].active = false;
+    
+    log(`停止音频处理 [${videoId}]`);
   }
   
   // 关闭WebSocket连接
   if (websockets[videoId]) {
     if (websockets[videoId].readyState === WebSocket.OPEN) {
-      // 使用TextEncoder替代Node.js的Buffer
-      log('发送END_OF_AUDIO信号');
-      const encoder = new TextEncoder();
-      websockets[videoId].send('END_OF_AUDIO');  // 直接发送字符串，而不是二进制数据
-      websockets[videoId].close();
+      // 发送结束信号
+      try {
+        websockets[videoId].send("END_OF_AUDIO");
+        log('已发送END_OF_AUDIO信号');
+      } catch (error) {
+        log(`发送END_OF_AUDIO信号时出错: ${error.message}`);
+      }
+      
+      // 给服务器一些时间处理最后的音频数据
+      setTimeout(() => {
+        if (websockets[videoId] && websockets[videoId].readyState === WebSocket.OPEN) {
+          websockets[videoId].close();
+        }
+        delete websockets[videoId];
+      }, 2000);
+    } else {
+      delete websockets[videoId];
     }
-    delete websockets[videoId];
   }
   
-  // 更新控件
-  const controls = controlsElements[videoId];
-  if (controls) {
-    controls.querySelector('button').textContent = '开始字幕';
-  }
+  // 隐藏字幕 - 确保字幕完全隐藏
+  updateSubtitle(videoId, "");
   
-  // 清除字幕
-  updateSubtitle(videoId, '');
+  // 直接操作字幕容器，确保它被隐藏
+  const subtitleContainer = subtitleContainers[videoId];
+  if (subtitleContainer) {
+    subtitleContainer.style.display = 'none';
+    subtitleContainer.style.visibility = 'hidden';
+    log(`强制隐藏字幕容器 [${videoId}]`);
+  }
 }
 
 // 更新字幕
 function updateSubtitle(videoId, text) {
   log(`更新字幕 [${videoId}]: "${text}"`);
+  
+  // 如果字幕已被禁用，则不显示任何字幕
+  if (!subtitleEnabled[videoId] && text && text.trim() !== '') {
+    log(`字幕已禁用 [${videoId}]，忽略字幕更新`);
+    return;
+  }
   
   const subtitleContainer = subtitleContainers[videoId];
   if (subtitleContainer) {
@@ -478,6 +611,8 @@ function updateSubtitle(videoId, text) {
     if (text && text.trim() !== '') {
       subtitle.textContent = text.trim();
       subtitleContainer.style.display = 'block';
+      subtitleContainer.style.visibility = 'visible';
+      subtitleContainer.style.opacity = '1';
       
       // 检查字幕容器是否可见
       setTimeout(() => {
@@ -496,6 +631,7 @@ function updateSubtitle(videoId, text) {
     } else {
       subtitle.textContent = '';
       subtitleContainer.style.display = 'none';
+      subtitleContainer.style.visibility = 'hidden';
       log(`字幕已隐藏 [${videoId}]`);
     }
   } else {
@@ -527,10 +663,9 @@ function updateSubtitleStyles() {
 function removeAllSubtitles() {
   // 停止所有处理
   videoElements.forEach(function(video) {
-    for (const videoId in processingStatus) {
-      if (processingStatus[videoId]) {
-        stopProcessing(video, videoId);
-      }
+    const videoId = video.dataset.whisperId;
+    if (videoId && processingStatus[videoId]) {
+      stopProcessing(video, videoId);
     }
   });
   
@@ -547,11 +682,32 @@ function removeAllSubtitles() {
     }
   }
   
+  // 关闭所有音频上下文
+  for (const videoId in audioContexts) {
+    try {
+      if (audioContexts[videoId] && audioContexts[videoId].state !== 'closed') {
+        log(`关闭音频上下文 [${videoId}]`);
+        audioContexts[videoId].close().catch(error => {
+          log(`关闭音频上下文时出错: ${error.message}`);
+        });
+      }
+    } catch (error) {
+      log(`处理音频上下文时出错: ${error.message}`);
+    }
+  }
+  
   // 清空引用
   videoElements = [];
   subtitleContainers = {};
   controlsElements = {};
   processingStatus = {};
+  audioContexts = {};
+  websockets = {};
+  mediaRecorders = {};
+  connectedVideoElements = {};
+  processorNodes = {};
+  audioProcessors = {};
+  subtitleEnabled = {};
 }
 
 // 创建音频流轨道
@@ -581,6 +737,66 @@ function createAudioStreamTrack(audioContext, processor) {
 function log(message) {
   console.log('[Whisper Web]', message);
   chrome.runtime.sendMessage({ action: 'log', message: message });
+}
+
+// 重置处理
+function resetProcessing(video, videoId) {
+  log(`重置音频处理 [${videoId}]`);
+  
+  // 检查WebSocket连接
+  if (websockets[videoId] && websockets[videoId].readyState === WebSocket.OPEN) {
+    // 发送重置信号
+    try {
+      websockets[videoId].send("RESET");
+      log('已发送RESET信号');
+      
+      // 更新字幕
+      updateSubtitle(videoId, '正在重置音频处理...');
+    } catch (error) {
+      log(`发送RESET信号时出错: ${error.message}`);
+      
+      // 如果发送失败，尝试重新启动处理
+      stopProcessing(video, videoId);
+      setTimeout(() => {
+        startProcessing(video, videoId);
+      }, 1000);
+    }
+  } else {
+    // 如果WebSocket未连接，则重新启动处理
+    stopProcessing(video, videoId);
+    setTimeout(() => {
+      startProcessing(video, videoId);
+    }, 1000);
+  }
+}
+
+// 恢复视频音频
+function restoreVideoAudio(video) {
+  if (!video || !video.tagName || video.tagName.toLowerCase() !== 'video') {
+    log('无效的视频元素，无法恢复音频');
+    return;
+  }
+  
+  try {
+    log(`尝试恢复视频音频: ${video.src || '(无源)'}`);
+    
+    // 在某些情况下，我们可能需要重新加载视频
+    const currentTime = video.currentTime;
+    const wasPlaying = !video.paused;
+    
+    // 如果视频没有声音，尝试重新加载
+    if (video.volume === 0 || video.muted) {
+      log('视频当前已静音，尝试取消静音');
+      video.muted = false;
+      video.volume = 1.0;
+    }
+    
+    // 如果视频仍然没有声音，可能需要更复杂的处理
+    // 这里我们只记录一个消息，因为实际的恢复在stopProcessing中处理
+    log('已尝试恢复视频音频，如果仍然没有声音，可能需要刷新页面');
+  } catch (error) {
+    log(`恢复视频音频时出错: ${error.message}`);
+  }
 }
 
 // 初始化插件
