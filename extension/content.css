@@ -1,0 +1,90 @@
+.whisper-web-subtitle-container {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  text-align: center;
+  z-index: 9999;
+  pointer-events: none;
+  transition: all 0.3s ease;
+  display: block;
+}
+
+.whisper-web-subtitle-container.bottom {
+  bottom: 10%;
+}
+
+.whisper-web-subtitle-container.top {
+  top: 10%;
+}
+
+.whisper-web-subtitle {
+  display: inline-block;
+  background-color: rgba(0, 0, 0, 0.7);
+  color: white;
+  padding: 8px 16px;
+  border-radius: 4px;
+  max-width: 80%;
+  margin: 0 auto;
+  text-align: center;
+  font-family: 'Arial', sans-serif;
+  font-size: 20px;
+  font-weight: bold;
+  line-height: 1.4;
+  word-wrap: break-word;
+  text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+}
+
+.whisper-web-controls {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  z-index: 10000;
+  background-color: rgba(0, 0, 0, 0.5);
+  border-radius: 4px;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+}
+
+.whisper-web-controls button {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 8px;
+  margin: 0 2px;
+}
+
+.whisper-web-controls button:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+.whisper-web-status {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+}
+
+.whisper-web-status.active {
+  background-color: #2ecc71;
+}
+
+.whisper-web-status.inactive {
+  background-color: #e74c3c;
+}
+
+.whisper-web-status.processing {
+  background-color: #f39c12;
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0% { opacity: 0.4; }
+  50% { opacity: 1; }
+  100% { opacity: 0.4; }
+}

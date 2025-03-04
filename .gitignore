@@ -169,3 +169,27 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+**/node_modules
+**/package-lock.json
+
+
+*.vtt
+*.srt
+*.json
+*.srt
+*.json
+*.wav
+*.mp3
+*.mp4
+*.avi
+*.mkv
+*.flv
+*.webm
+
+server/stream_whisper/models
+server/stream_whisper/subtitles
+server/temp
+server/temp/*
+server/subtitles
+server/subtitles/*
