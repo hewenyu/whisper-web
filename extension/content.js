@@ -139,7 +139,26 @@ function setupVideoElement(video) {
   controlsElements[videoId] = controls;
   
   // 将字幕容器和控制元素添加到视频容器
-  const videoContainer = video.parentElement || document.body;
+  let videoContainer = video.parentElement;
+  
+  // 对于YouTube，尝试找到正确的容器
+  if (window.location.hostname.includes('youtube.com')) {
+    // 查找YouTube播放器容器
+    const ytContainer = video.closest('.html5-video-player');
+    if (ytContainer) {
+      videoContainer = ytContainer;
+    }
+  }
+  
+  // 如果找不到容器，使用body
+  if (!videoContainer) {
+    videoContainer = document.body;
+  }
+  
+  // 设置字幕容器样式
+  subtitleContainer.style.position = 'absolute';
+  subtitleContainer.style.zIndex = '2147483647'; // 最大z-index值
+  
   videoContainer.appendChild(subtitleContainer);
   videoContainer.appendChild(controls);
   
