@@ -14,6 +14,7 @@ import numpy as np
 
 from .transcription import WhisperTranscriber
 from .models import TranscriptionRequest, TranscriptionResponse, SubtitleFormat
+from .transcriber_factory import TranscriberFactory
 
 from contextlib import asynccontextmanager
 
@@ -497,6 +498,243 @@ async def websocket_stream(websocket: WebSocket, client_id: str):
             del active_connections[client_id]
         if client_id in streaming_transcribers:
             del streaming_transcribers[client_id]
+
+@app.post("/api/video/transcribe", response_model=TranscriptionResponse)
+async def transcribe_video(
+    file: UploadFile = File(...),
+    language: Optional[str] = None,
+    model_size: Optional[str] = None,
+    subtitle_format: SubtitleFormat = SubtitleFormat.VTT
+):
+    """
+    转录上传的视频文件，生成字幕
+    
+    Args:
+        file: 视频文件
+        language: 语言代码 (如果为auto或None，则自动检测)
+        model_size: 模型大小 (tiny, base, small, medium, large)
+        subtitle_format: 字幕格式 (vtt, srt, json)
+        
+    Returns:
+        转录结果
+    """
+    try:
+        # 保存上传的文件
+        file_path = os.path.join("temp", f"{uuid.uuid4()}_{file.filename}")
+        with open(file_path, "wb") as buffer:
+            buffer.write(await file.read())
+        
+        logger.info(f"Saved uploaded video file to {file_path}")
+        
+        # 获取视频转录器
+        video_transcriber = TranscriberFactory.get_transcriber("video", model_size=model_size)
+        
+        # 提取音频
+        audio_path = await video_transcriber.extract_audio(file_path)
+        logger.info(f"Extracted audio to {audio_path}")
+        
+        # 分段处理音频
+        segments = await video_transcriber.process_audio_segments(audio_path, language)
+        logger.info(f"Transcription completed: {len(segments)} segments")
+        
+        # 生成字幕文件
+        subtitle_text = video_transcriber.generate_subtitles(segments, subtitle_format)
+        
+        # 保存字幕文件
+        subtitle_filename = f"{os.path.splitext(os.path.basename(file.filename))[0]}.{subtitle_format.value}"
+        subtitle_path = os.path.join("subtitles", subtitle_filename)
+        with open(subtitle_path, "w", encoding="utf-8") as f:
+            f.write(subtitle_text)
+        
+        logger.info(f"Saved subtitles to {subtitle_path}")
+        
+        # 返回结果
+        return TranscriptionResponse(
+            success=True,
+            message="Transcription completed successfully",
+            segments=segments,
+            subtitle_path=subtitle_path
+        )
+        
+    except Exception as e:
+        logger.error(f"Error transcribing video: {str(e)}")
+        logger.exception("Detailed error:")
+        raise HTTPException(status_code=500, detail=f"Error transcribing video: {str(e)}")
+    
+    finally:
+        # 清理临时文件
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(f"Removed temporary file: {file_path}")
+        except Exception as e:
+            logger.error(f"Error removing temporary file: {str(e)}")
+
+@app.websocket("/ws/video/{client_id}")
+async def websocket_video(websocket: WebSocket, client_id: str):
+    """
+    WebSocket端点，用于视频文件的实时转录
+    """
+    try:
+        logger.info(f"Client {client_id} requested video transcription connection")
+        await websocket.accept()
+        logger.info(f"Accepted WebSocket connection for client {client_id}")
+        
+        # 发送连接成功消息
+        await websocket.send_json({
+            "type": "info",
+            "message": "Connection established, waiting for video data"
+        })
+        
+        # 初始化视频转录器
+        try:
+            logger.info(f"Initializing video transcriber for client {client_id}")
+            video_transcriber = TranscriberFactory.get_transcriber("video")
+            logger.info(f"Video transcriber initialized for client {client_id}")
+        except Exception as e:
+            logger.error(f"Error initializing video transcriber: {str(e)}")
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Failed to initialize transcriber: {str(e)}"
+            })
+            await websocket.close(code=1011, reason=f"Failed to initialize transcriber: {str(e)}")
+            return
+        
+        active_connections[client_id] = websocket
+        
+        # 等待客户端发送视频数据
+        while True:
+            try:
+                message = await websocket.receive()
+            except WebSocketDisconnect:
+                logger.info(f"Client {client_id} disconnected")
+                break
+            except Exception as e:
+                logger.error(f"Error receiving message: {str(e)}")
+                break
+            
+            # 处理文本消息
+            if 'text' in message:
+                text_data = message['text']
+                logger.info(f"Received text message: {text_data}")
+                
+                data = json.loads(text_data)
+                
+                # 处理不同类型的消息
+                if data.get('type') == 'video_info':
+                    # 客户端发送视频信息
+                    logger.info(f"Received video info: {data}")
+                    await websocket.send_json({
+                        "type": "info",
+                        "message": "Video info received, ready to process"
+                    })
+                
+                elif data.get('type') == 'is_video':
+                    # 客户端询问是否是视频
+                    logger.info("Client is asking if the media is a video")
+                    await websocket.send_json({
+                        "type": "media_type",
+                        "is_video": True,
+                        "message": "Media is detected as a video"
+                    })
+                
+                elif data.get('type') == 'end_of_video':
+                    # 客户端发送视频结束信号
+                    logger.info(f"Client {client_id} sent END_OF_VIDEO signal")
+                    await websocket.send_json({
+                        "type": "final_result"
+                    })
+                    logger.info(f"Transcription completed for client {client_id}")
+                    break
+            
+            # 处理二进制数据（视频文件）
+            elif 'bytes' in message:
+                video_data = message['bytes']
+                logger.info(f"Received video data: {len(video_data)} bytes")
+                
+                try:
+                    # 保存视频数据到临时文件
+                    temp_video_path = os.path.join("temp", f"{client_id}_{uuid.uuid4()}.mp4")
+                    with open(temp_video_path, "wb") as f:
+                        f.write(video_data)
+                    
+                    logger.info(f"Saved video data to {temp_video_path}")
+                    
+                    # 提取音频
+                    audio_path = await video_transcriber.extract_audio(temp_video_path)
+                    logger.info(f"Extracted audio to {audio_path}")
+                    
+                    # 发送进度更新
+                    await websocket.send_json({
+                        "type": "progress",
+                        "stage": "audio_extracted",
+                        "message": "Audio extracted from video"
+                    })
+                    
+                    # 分段处理音频
+                    segments = await video_transcriber.process_audio_segments(audio_path, None)
+                    logger.info(f"Transcription completed: {len(segments)} segments")
+                    
+                    # 发送进度更新
+                    await websocket.send_json({
+                        "type": "progress",
+                        "stage": "transcription_completed",
+                        "message": "Transcription completed"
+                    })
+                    
+                    # 发送字幕段落
+                    for segment in segments:
+                        await websocket.send_json({
+                            "type": "segment",
+                            "segment": segment.dict()
+                        })
+                    
+                    # 生成VTT字幕
+                    vtt_text = video_transcriber.generate_subtitles(segments, SubtitleFormat.VTT)
+                    
+                    # 发送完整的VTT字幕
+                    await websocket.send_json({
+                        "type": "subtitles",
+                        "format": "vtt",
+                        "content": vtt_text
+                    })
+                    
+                    # 发送最终结果标记
+                    await websocket.send_json({
+                        "type": "final_result"
+                    })
+                    
+                    # 清理临时文件
+                    try:
+                        os.remove(temp_video_path)
+                        os.remove(audio_path)
+                    except Exception as e:
+                        logger.error(f"Error removing temporary files: {str(e)}")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing video: {str(e)}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Error processing video: {str(e)}"
+                    })
+    
+    except WebSocketDisconnect:
+        logger.info(f"Client {client_id} disconnected")
+    
+    except Exception as e:
+        logger.error(f"WebSocket error: {str(e)}")
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Server error: {str(e)}"
+            })
+        except:
+            pass
+    
+    finally:
+        logger.info(f"Cleaning up resources for client {client_id}")
+        if client_id in active_connections:
+            del active_connections[client_id]
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True) 
