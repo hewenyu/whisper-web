@@ -5,7 +5,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.8+-blue.svg" alt="Python Version">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-green.svg" alt="FastAPI Version">
-  <img src="https://img.shields.io/badge/Next.js-13.4+-orange.svg" alt="Next.js Version">
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License">
 </p>
 
@@ -16,9 +15,8 @@ Whisper Web 是一个基于 OpenAI 的 Whisper 模型的在线视频字幕生成
 本项目包含四个主要部分：
 
 - **后端服务**：基于 FastAPI 和 faster-whisper 的 API 服务，负责处理视频/音频文件并生成字幕
-- **前端应用**：基于 Next.js 的 Web 应用，提供用户界面，允许用户上传视频并获取字幕
-- **浏览器扩展**：Chrome/Firefox 扩展，可以为任意网站上的视频添加实时字幕
-- **Web扩展**：新版浏览器扩展，使用现代化的技术栈重写，提供更好的用户体验
+- **浏览器插件**：Chrome/Firefox 扩展，可以为任意网站上的视频添加实时字幕 (stream流式和视频播放网站)
+
 
 ## 功能特点
 
@@ -37,34 +35,35 @@ Whisper Web 是一个基于 OpenAI 的 Whisper 模型的在线视频字幕生成
 - yt-dlp（用于从各种视频网站提取音频）
 - 至少 4GB RAM（推荐 8GB+，特别是使用较大的模型时）
 - 支持 CUDA 的 NVIDIA GPU（可选，但推荐用于更快的处理速度）
+- [CUDA lib](https://github.com/Purfview/whisper-standalone-win/releases/tag/libs) 下载
 
 ## 项目结构
 
 ```
 whisper-web/
-├── server/                # 后端服务
-│   ├── app/              # FastAPI 应用
-│   │   ├── main.py      # 主应用入口和WebSocket服务
-│   │   ├── browser_extension.py # 浏览器扩展相关API
-│   │   └── models.py    # 数据模型定义
-│   ├── stream_whisper/   # 流式转录模块
-│   ├── audio_downloader/ # 音频下载模块
-│   ├── streaming_sensevoice/ # 语音识别模块
-│   ├── temp/            # 临时文件目录
-│   ├── subtitles/       # 字幕文件输出目录
-│   ├── requirements.txt # Python 依赖
-│   └── run.py          # 启动脚本
-├── extension/          # 旧版浏览器插件
-│   ├── manifest.json   # 插件配置
-│   └── popup.html      # 弹出窗口
-└── web-extension/      # 新版浏览器扩展
+├── server/                         # 后端服务
+│   ├── app/                        # FastAPI 应用
+│   │   ├── main.py                 # 主应用入口和WebSocket服务
+│   │   ├── browser_extension.py    # 浏览器扩展相关API
+│   │   └── models.py               # 数据模型定义
+│   ├── stream_whisper/             # 流式转录模块
+│   ├── audio_downloader/           # 音频下载模块
+│   ├── streaming_sensevoice/       # 语音识别模块
+│   ├── temp/                       # 临时文件目录
+│   ├── subtitles/                  # 字幕文件输出目录
+│   ├── requirements.txt            # Python 依赖
+│   └── run.py                      # 启动脚本
+├── extension/                      # stream流式浏览器插件
+│   ├── manifest.json               # 插件配置
+│   └── popup.html                  # 弹出窗口
+└── web-extension/                  # yt-dlp支持的视频播放网站浏览器扩展
     ├── src/
-    │   ├── popup.html  # 扩展弹出窗口界面
-    │   ├── popup.js    # 弹出窗口逻辑
-    │   ├── content.js  # 内容脚本（处理页面视频）
-    │   └── background.js # 后台脚本（处理API请求）
-    ├── public/         # 静态资源
-    └── manifest.json   # 扩展配置文件
+    │   ├── popup.html              # 扩展弹出窗口界面
+    │   ├── popup.js                # 弹出窗口逻辑
+    │   ├── content.js              # 内容脚本（处理页面视频）
+    │   └── background.js           # 后台脚本（处理API请求）
+    ├── public/                     # 静态资源
+    └── manifest.json               # 扩展配置文件
 ```
 
 ## 快速开始
@@ -148,6 +147,12 @@ python run.py
 - 建议在生产环境中配置适当的CORS策略
 - 某些网站可能限制内容访问，导致音频提取失败
 
+## 感谢
+
+- [Purfview](https://github.com/Purfview/whisper-standalone-win) 提供的CUDA lib
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) 提供的音频提取功能
+- [faster-whisper](https://github.com/m-bain/whisperx) 提供的语音识别功能
+- [SenseVoice](https://github.com/SenseVoice/SenseVoice) 提供的语音识别功能
 ## 许可证
 
 MIT
