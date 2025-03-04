@@ -15,14 +15,40 @@ import numpy as np
 from .transcription import WhisperTranscriber
 from .models import TranscriptionRequest, TranscriptionResponse, SubtitleFormat
 
+from contextlib import asynccontextmanager
+
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# 存储活跃的WebSocket连接
+active_connections: Dict[str, WebSocket] = {}
+# 存储流式转录器实例
+streaming_transcribers: Dict[str, Any] = {}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting up Whisper Web API")
+    # 确保临时目录存在
+    os.makedirs("temp", exist_ok=True)
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Whisper Web API")
+    # 清理临时文件
+    for file in os.listdir("temp"):
+        try:
+            os.remove(os.path.join("temp", file))
+        except Exception as e:
+            logger.error(f"Error removing temp file: {e}")
+
 app = FastAPI(
     title="Whisper Web API",
     description="API for transcribing audio/video using faster-whisper",
-    version="0.1.0"
+    version="0.1.0",
+    lifespan=lifespan
 )
 
 # 配置CORS
@@ -36,27 +62,6 @@ app.add_middleware(
 
 # 初始化转录器
 transcriber = WhisperTranscriber()
-
-# 存储活跃的WebSocket连接
-active_connections: Dict[str, WebSocket] = {}
-# 存储流式转录器实例
-streaming_transcribers: Dict[str, Any] = {}
-
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Starting up Whisper Web API")
-    # 确保临时目录存在
-    os.makedirs("temp", exist_ok=True)
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("Shutting down Whisper Web API")
-    # 清理临时文件
-    for file in os.listdir("temp"):
-        try:
-            os.remove(os.path.join("temp", file))
-        except Exception as e:
-            logger.error(f"Error removing temp file: {e}")
 
 @app.get("/")
 async def root():
