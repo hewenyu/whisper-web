@@ -32,7 +32,9 @@ class VideoTranscriber(BaseTranscriber):
         self,
         model_size: Optional[str] = None,
         device: Optional[str] = None,
-        compute_type: Optional[str] = None
+        compute_type: Optional[str] = None,
+        segment_duration: float = 30.0,  # 每段音频的长度（秒）
+        overlap_duration: float = 2.0,   # 重叠部分长度（秒）
     ):
         """
         初始化视频转录器
@@ -41,31 +43,244 @@ class VideoTranscriber(BaseTranscriber):
             model_size: 模型大小 ("tiny", "base", "small", "medium", "large")
             device: 设备 ("cpu", "cuda", "auto")
             compute_type: 计算类型 ("float16", "float32", "int8")
+            segment_duration: 分段长度（秒）
+            overlap_duration: 重叠部分长度（秒）
         """
         # 调用父类初始化
         super().__init__(model_size, device, compute_type)
+        
+        self.segment_duration = segment_duration
+        self.overlap_duration = overlap_duration
         
         try:
             # 加载Whisper模型
             self._load_whisper_model()
             
-            # 加载对齐模型
-            logger.info("Loading alignment model")
-            self.alignment_model, self.metadata = whisperx.load_align_model(
-                language_code="en",
-                device=self.device
-            )
-            logger.info("Alignment model loaded")
+            # 加载强制对齐模型
+            self._load_alignment_model()
             
         except Exception as e:
-            logger.error(f"Failed to load models: {str(e)}")
-            logger.exception("Detailed model loading error:")
+            logger.error(f"初始化失败: {str(e)}")
             raise
+
+    def _load_alignment_model(self):
+        """
+        加载强制对齐模型
+        """
+        try:
+            logger.info("加载强制对齐模型")
+            import whisperx
+            self.alignment_model, self.metadata = whisperx.load_align_model(
+                language_code="zh",
+                device=self.device
+            )
+            logger.info("强制对齐模型加载完成")
+        except Exception as e:
+            logger.error(f"加载强制对齐模型失败: {str(e)}")
+            raise
+
+    async def process_complete_video(self, audio_path: str, language: Optional[str] = None) -> List[TranscriptionSegment]:
+        """
+        处理完整视频文件
         
-        # 设置分段处理的参数
-        self.segment_duration = 30  # 每段30秒
-        self.overlap_duration = 5   # 重叠5秒，避免分段处理时的断句问题
-    
+        Args:
+            audio_path: 音频文件路径
+            language: 语言代码
+            
+        Returns:
+            转录段落列表
+        """
+        try:
+            # 加载音频
+            audio = self.load_audio(audio_path)
+            sample_rate = 16000
+            
+            # 计算总时长（秒）
+            total_duration = len(audio) / sample_rate
+            logger.info(f"音频总时长: {total_duration:.2f} 秒")
+            
+            # 分段处理
+            all_segments = await self.process_audio_segments(audio_path, language)
+            
+            # 应用强制对齐
+            aligned_segments = await self.apply_forced_alignment(audio, all_segments)
+            
+            # 合并和优化字幕段落
+            final_segments = self.optimize_segments(aligned_segments)
+            
+            return final_segments
+            
+        except Exception as e:
+            logger.error(f"处理完整视频失败: {str(e)}")
+            raise
+
+    async def apply_forced_alignment(self, audio: np.ndarray, segments: List[TranscriptionSegment]) -> List[TranscriptionSegment]:
+        """
+        应用强制对齐算法
+        
+        Args:
+            audio: 音频数据
+            segments: 原始转录段落
+            
+        Returns:
+            对齐后的段落
+        """
+        try:
+            logger.info("应用强制对齐算法")
+            
+            # 准备输入数据
+            whisperx_segments = [{
+                "start": s.start,
+                "end": s.end,
+                "text": s.text
+            } for s in segments]
+            
+            # 应用强制对齐
+            result = whisperx.align(
+                whisperx_segments,
+                self.alignment_model,
+                self.metadata,
+                audio,
+                device=self.device,
+                return_char_alignments=False
+            )
+            
+            # 转换回TranscriptionSegment格式
+            aligned_segments = []
+            for segment in result["segments"]:
+                aligned_segments.append(TranscriptionSegment(
+                    start=segment["start"],
+                    end=segment["end"],
+                    text=segment["text"],
+                    words=[{
+                        "word": w["word"],
+                        "start": w["start"],
+                        "end": w["end"],
+                        "score": w.get("score", 1.0)
+                    } for w in segment.get("words", [])]
+                ))
+            
+            return aligned_segments
+            
+        except Exception as e:
+            logger.error(f"强制对齐失败: {str(e)}")
+            raise
+
+    def optimize_segments(self, segments: List[TranscriptionSegment]) -> List[TranscriptionSegment]:
+        """
+        优化字幕段落
+        
+        Args:
+            segments: 字幕段落列表
+            
+        Returns:
+            优化后的段落列表
+        """
+        try:
+            logger.info("优化字幕段落")
+            
+            # 按时间排序
+            segments.sort(key=lambda x: x.start)
+            
+            # 合并过短的段落
+            MIN_DURATION = 1.0  # 最短段落时长（秒）
+            MAX_DURATION = 5.0  # 最长段落时长（秒）
+            
+            optimized = []
+            current = None
+            
+            for segment in segments:
+                if not current:
+                    current = segment
+                    continue
+                    
+                # 计算当前段落时长
+                current_duration = current.end - current.start
+                
+                # 如果当前段落过短，且与下一段落间隔很短，则合并
+                if (current_duration < MIN_DURATION and 
+                    segment.start - current.end < 0.3):
+                    current.end = segment.end
+                    current.text += " " + segment.text
+                    current.words.extend(segment.words)
+                else:
+                    # 如果当前段落过长，则拆分
+                    if current_duration > MAX_DURATION:
+                        split_segments = self._split_long_segment(current)
+                        optimized.extend(split_segments)
+                    else:
+                        optimized.append(current)
+                    current = segment
+            
+            # 处理最后一个段落
+            if current:
+                if current.end - current.start > MAX_DURATION:
+                    optimized.extend(self._split_long_segment(current))
+                else:
+                    optimized.append(current)
+            
+            return optimized
+            
+        except Exception as e:
+            logger.error(f"优化段落失败: {str(e)}")
+            raise
+
+    def _split_long_segment(self, segment: TranscriptionSegment) -> List[TranscriptionSegment]:
+        """
+        拆分过长的段落
+        
+        Args:
+            segment: 要拆分的段落
+            
+        Returns:
+            拆分后的段落列表
+        """
+        try:
+            # 根据标点符号或停顿拆分文本
+            parts = []
+            current_part = []
+            current_words = []
+            
+            for word in segment.words:
+                current_part.append(word["word"])
+                current_words.append(word)
+                
+                # 在标点符号处拆分
+                if any(p in word["word"] for p in "。，！？.!?"):
+                    if current_part:
+                        parts.append({
+                            "text": "".join(current_part),
+                            "words": current_words.copy()
+                        })
+                        current_part = []
+                        current_words = []
+            
+            # 处理剩余部分
+            if current_part:
+                parts.append({
+                    "text": "".join(current_part),
+                    "words": current_words
+                })
+            
+            # 创建新的段落
+            result = []
+            for part in parts:
+                if not part["words"]:
+                    continue
+                    
+                result.append(TranscriptionSegment(
+                    start=part["words"][0]["start"],
+                    end=part["words"][-1]["end"],
+                    text=part["text"],
+                    words=part["words"]
+                ))
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"拆分段落失败: {str(e)}")
+            raise
+
     async def extract_audio(self, file_path: str) -> str:
         """
         从视频文件中提取音频

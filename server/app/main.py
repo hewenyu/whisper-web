@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 import uvicorn
@@ -11,9 +11,10 @@ import uuid
 import json
 import time
 import numpy as np
+from datetime import datetime
 
 from .transcription import WhisperTranscriber
-from .models import TranscriptionRequest, TranscriptionResponse, SubtitleFormat
+from .models import TranscriptionRequest, TranscriptionResponse, SubtitleFormat, TranscriptionSegment
 from .transcriber_factory import TranscriberFactory
 
 from contextlib import asynccontextmanager
@@ -735,6 +736,124 @@ async def websocket_video(websocket: WebSocket, client_id: str):
         logger.info(f"Cleaning up resources for client {client_id}")
         if client_id in active_connections:
             del active_connections[client_id]
+
+@app.post("/transcribe")
+async def transcribe_video(
+    file: UploadFile = File(...),
+    language: Optional[str] = Query(None, description="语言代码，如果为auto则自动检测"),
+    format: SubtitleFormat = Query(SubtitleFormat.json, description="字幕格式")
+) -> Dict[str, Any]:
+    """
+    处理完整视频/音频文件并生成字幕
+    
+    Args:
+        file: 视频/音频文件
+        language: 语言代码
+        format: 字幕格式
+        
+    Returns:
+        包含字幕数据的字典
+    """
+    try:
+        # 保存上传的文件
+        file_path = os.path.join("temp", f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}")
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        logger.info(f"文件已保存: {file_path}")
+        
+        # 获取视频转录器实例
+        transcriber = TranscriberFactory.get_transcriber("video")
+        
+        try:
+            # 提取音频
+            audio_path = await transcriber.extract_audio(file_path)
+            logger.info(f"音频已提取: {audio_path}")
+            
+            # 处理完整视频
+            segments = await transcriber.process_complete_video(audio_path, language)
+            
+            # 格式化输出
+            if format == SubtitleFormat.vtt:
+                content = generate_vtt(segments)
+                return {"format": "vtt", "content": content}
+            elif format == SubtitleFormat.srt:
+                content = generate_srt(segments)
+                return {"format": "srt", "content": content}
+            else:
+                return {
+                    "format": "json",
+                    "subtitles": [s.dict() for s in segments]
+                }
+                
+        finally:
+            # 清理临时文件
+            try:
+                os.remove(file_path)
+                if audio_path:
+                    os.remove(audio_path)
+            except Exception as e:
+                logger.warning(f"清理临时文件失败: {str(e)}")
+        
+    except Exception as e:
+        logger.error(f"处理视频失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def generate_vtt(segments: List[TranscriptionSegment]) -> str:
+    """
+    生成WebVTT格式字幕
+    """
+    vtt_lines = ["WEBVTT\n"]
+    
+    for i, segment in enumerate(segments, 1):
+        # 转换时间戳为VTT格式
+        start = format_timestamp(segment.start)
+        end = format_timestamp(segment.end)
+        
+        vtt_lines.append(f"\n{i}")
+        vtt_lines.append(f"{start} --> {end}")
+        vtt_lines.append(segment.text)
+    
+    return "\n".join(vtt_lines)
+
+def generate_srt(segments: List[TranscriptionSegment]) -> str:
+    """
+    生成SRT格式字幕
+    """
+    srt_lines = []
+    
+    for i, segment in enumerate(segments, 1):
+        # 转换时间戳为SRT格式
+        start = format_timestamp(segment.start, srt=True)
+        end = format_timestamp(segment.end, srt=True)
+        
+        srt_lines.append(str(i))
+        srt_lines.append(f"{start} --> {end}")
+        srt_lines.append(segment.text)
+        srt_lines.append("")
+    
+    return "\n".join(srt_lines)
+
+def format_timestamp(seconds: float, srt: bool = False) -> str:
+    """
+    格式化时间戳
+    
+    Args:
+        seconds: 秒数
+        srt: 是否为SRT格式
+        
+    Returns:
+        格式化的时间戳字符串
+    """
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    
+    if srt:
+        return f"{hours:02d}:{minutes:02d}:{secs:06.3f}".replace(".", ",")
+    else:
+        return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True) 
