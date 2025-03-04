@@ -8,6 +8,26 @@
 - 实时音频流转录
 - 多语言支持
 - 生成VTT/SRT/JSON格式字幕
+- 浏览器扩展API支持
+- 音频提取和下载支持
+- CUDA加速支持
+
+## 项目结构
+
+```
+server/
+├── app/                    # 主应用目录
+│   ├── main.py            # 主应用入口和WebSocket服务
+│   ├── browser_extension.py # 浏览器扩展相关API
+│   └── models.py          # 数据模型定义
+├── stream_whisper/        # 流式转录模块
+├── audio_downloader/      # 音频下载模块
+├── streaming_sensevoice/  # 语音识别模块
+├── temp/                  # 临时文件目录
+├── subtitles/            # 字幕文件输出目录
+├── requirements.txt      # Python依赖
+└── run.py               # 服务启动脚本
+```
 
 ## 安装
 
@@ -50,9 +70,46 @@ RELOAD=True
 
 # Whisper模型配置
 MODEL_SIZE=base  # 可选: tiny, base, small, medium, large
-DEVICE=cpu  # 或 cuda (需要NVIDIA GPU)
-COMPUTE_TYPE=int8  # 或 float16
+DEVICE=cuda     # 或 cpu
+COMPUTE_TYPE=float16  # 或 int8
 ```
+
+## API端点
+
+### 文件转录
+
+- `POST /transcribe`
+  - 支持文件上传或UUID引用
+  - 参数：
+    - `file`: 上传的音频/视频文件
+    - `file_uuid`: 已下载文件的UUID
+    - `language`: 语言代码（可选）
+    - `task`: 任务类型（transcribe/translate）
+
+### 音频提取
+
+- `POST /extract-audio`
+  - 从URL提取音频
+  - 参数：
+    - `url`: 视频URL
+    - `video_id`: 视频ID
+
+### 字幕下载
+
+- `GET /subtitles/{file_uuid}.{format}`
+  - 下载生成的字幕文件
+  - 支持格式：vtt, srt, json
+
+### 实时转录
+
+- `WebSocket /ws/stream/{client_id}`
+  - 实时音频流转录
+  - 支持浏览器麦克风输入
+
+### 状态检查
+
+- `GET /status`
+  - 获取服务状态和模型信息
 
 ## 运行
 
@@ -61,48 +118,19 @@ python run.py
 ```
 
 服务器将在 http://localhost:8000 启动。
+API文档可在 http://localhost:8000/docs 查看。
 
-## API文档
+## 测试页面
 
-启动服务器后，访问 http://localhost:8000/docs 查看API文档。
+访问 http://localhost:8000/test 可以测试实时语音转录功能。
 
-### 主要端点
+## 注意事项
 
-- `POST /transcribe` - 上传视频/音频文件进行转录
-- `WebSocket /ws/transcribe/{client_id}` - 实时音频流转录
+- 确保有足够的磁盘空间用于临时文件和字幕存储
+- 使用CUDA时需要安装对应的NVIDIA驱动和CUDA工具包
+- 临时文件会在1小时后自动清理
+- 建议在生产环境中配置适当的CORS策略
 
-## 示例
+## 许可证
 
-### 文件转录
-
-```python
-import requests
-
-url = "http://localhost:8000/transcribe"
-files = {"file": open("video.mp4", "rb")}
-params = {"language": "zh", "task": "transcribe", "format": "vtt"}
-
-response = requests.post(url, files=files, params=params)
-print(response.json())
-```
-
-### WebSocket实时转录
-
-```javascript
-const ws = new WebSocket("ws://localhost:8000/ws/transcribe/client123");
-
-ws.onopen = () => {
-  console.log("Connected to WebSocket");
-  
-  // 发送音频数据
-  ws.send(audioChunk);
-  
-  // 结束音频传输
-  ws.send(new Uint8Array(Buffer.from("END_OF_AUDIO")));
-};
-
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  console.log("Received:", data);
-};
-``` 
+MIT 
