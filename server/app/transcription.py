@@ -220,17 +220,17 @@ class WhisperTranscriber:
             raise
 
     async def transcribe_file(
-        self, 
-        file_path: str, 
+        self,
+        file_path: str,
         language: Optional[str] = None,
         task: str = "transcribe"
-    ) -> List[TranscriptionSegment]:
+    ) -> List[Dict[str, Any]]:
         """
         转录音频/视频文件
         
         Args:
             file_path: 文件路径
-            language: 语言代码 (如 "en", "zh", "ja")
+            language: 语言代码 (如 "zh", "en", None 表示自动检测)
             task: 任务类型 ("transcribe" 或 "translate")
             
         Returns:
@@ -239,19 +239,20 @@ class WhisperTranscriber:
         try:
             # 检查文件是否存在
             if not os.path.exists(file_path):
-                logger.error(f"File not found: {file_path}")
-                raise FileNotFoundError(f"File not found: {file_path}")
-                
-            # 检查文件大小
+                raise FileNotFoundError(f"文件不存在: {file_path}")
+            
+            # 获取文件大小
             file_size = os.path.getsize(file_path)
-            if file_size == 0:
-                logger.error(f"Empty file: {file_path}")
-                raise ValueError(f"Empty file: {file_path}")
                 
             logger.info(f"Transcribing file: {file_path} ({file_size} bytes)")
             
             # 提取音频
             audio_path = await self.extract_audio(file_path)
+            
+            # 如果语言参数是"auto"，将其设置为None以触发自动检测
+            if language == "auto":
+                logger.info("Language parameter is 'auto', setting to None for auto-detection")
+                language = None
             
             # 执行转录
             logger.info(f"Starting transcription with language={language}, task={task}")

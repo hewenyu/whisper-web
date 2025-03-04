@@ -33,6 +33,7 @@ Whisper Web 是一个基于 OpenAI 的 Whisper 模型的在线视频字幕生成
 - Python 3.8+
 - Node.js 16+
 - FFmpeg（用于视频/音频处理）
+- yt-dlp（用于从各种视频网站提取音频）
 - 至少 4GB RAM（推荐 8GB+，特别是使用较大的模型时）
 - 支持 CUDA 的 NVIDIA GPU（可选，但推荐用于更快的处理速度）
 
@@ -47,9 +48,27 @@ cd whisper-web
 
 ### 2. 安装后端依赖
 
+使用自动安装脚本（推荐）：
+
+#### Linux/macOS:
+```bash
+cd server
+chmod +x install.sh
+./install.sh
+```
+
+#### Windows:
+```bash
+cd server
+install.bat
+```
+
+或手动安装：
+
 ```bash
 cd server
 pip install -r requirements.txt
+pip install yt-dlp
 ```
 
 ### 3. 安装前端依赖
@@ -163,6 +182,29 @@ yarn dev
 4. 浏览包含视频的网页
 5. 视频右上角会出现字幕控制按钮
 6. 点击"开始字幕"按钮开始生成字幕
+7. 如果没有检测到视频，可以点击"重新检测"按钮
+
+## 支持的视频网站
+
+本项目使用 yt-dlp 提取音频，支持大量视频网站，包括但不限于：
+
+- YouTube
+- Bilibili (B站)
+- 爱奇艺
+- 腾讯视频
+- 优酷
+- 芒果TV
+- 搜狐视频
+- Vimeo
+- Dailymotion
+- Facebook
+- Twitter
+- Instagram
+- TikTok
+- Twitch
+- 各类教育平台（Coursera、Udemy等）
+
+对于不支持的网站，插件会尝试使用浏览器API直接提取音频。
 
 ## 技术架构
 
