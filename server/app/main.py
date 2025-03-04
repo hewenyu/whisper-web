@@ -4,6 +4,7 @@ import logging
 import time
 import uuid
 import json
+import uvicorn
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
@@ -12,9 +13,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, F
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-
-from app.transcription import WhisperTranscriber
-from app.models import SubtitleFormat
 from app.browser_extension import router as browser_extension_router
 
 # 配置日志
@@ -63,8 +61,7 @@ app.add_middleware(
 # 挂载静态文件目录
 app.mount("/temp", StaticFiles(directory="temp"), name="temp")
 
-# 初始化转录器
-transcriber = WhisperTranscriber()
+
 
 # 添加浏览器扩展路由
 app.include_router(browser_extension_router)
